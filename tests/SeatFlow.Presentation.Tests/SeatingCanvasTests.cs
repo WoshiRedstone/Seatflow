@@ -396,4 +396,88 @@ public class SeatingCanvasTests
 
         clicks.Should().Be(1, "触摸点击在捕获丢失后仍应可用");
     }
+
+    // ── 双指缩放（触摸设备没有滚轮，捏合是唯一缩放入口） ──
+
+    [AvaloniaFact]
+    public void 双指捏合张开_放大画布()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+        var zoomBefore = canvas.Zoom;
+
+        var center = ToScreen(canvas, new Point(100, 60));
+        var fingerA = window.TouchBegin(new Point(center.X - 20, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 20, center.Y));
+        window.TouchMove(fingerA, new Point(center.X - 60, center.Y));
+        window.TouchMove(fingerB, new Point(center.X + 60, center.Y));
+        window.TouchEnd(fingerA, new Point(center.X - 60, center.Y));
+        window.TouchEnd(fingerB, new Point(center.X + 60, center.Y));
+
+        canvas.Zoom.Should().BeGreaterThan(zoomBefore, "张开两指必须放大画布");
+    }
+
+    [AvaloniaFact]
+    public void 双指捏合收拢_缩小画布()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+        canvas.Zoom = 2.0;
+        var zoomBefore = canvas.Zoom;
+
+        var center = ToScreen(canvas, new Point(60, 40));
+        var fingerA = window.TouchBegin(new Point(center.X - 80, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 80, center.Y));
+        window.TouchMove(fingerA, new Point(center.X - 30, center.Y));
+        window.TouchMove(fingerB, new Point(center.X + 30, center.Y));
+        window.TouchEnd(fingerA, new Point(center.X - 30, center.Y));
+        window.TouchEnd(fingerB, new Point(center.X + 30, center.Y));
+
+        canvas.Zoom.Should().BeLessThan(zoomBefore, "收拢两指必须缩小画布");
+    }
+
+    [AvaloniaFact]
+    public void 双指缩放_不触发座位点击也不拖拽()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+
+        var clicks = 0;
+        var drops = 0;
+        canvas.SeatClicked += (_, _) => clicks++;
+        canvas.SeatDropped += (_, _) => drops++;
+
+        // 第一根手指落在座位上（单指会进入拖拽判定），第二根手指出现后必须转成缩放
+        var seat = ToScreen(canvas, new Point(10, 10));
+        var far = ToScreen(canvas, new Point(120, 10));
+        var fingerA = window.TouchBegin(seat);
+        var fingerB = window.TouchBegin(far);
+        window.TouchMove(fingerA, new Point(seat.X - 30, seat.Y - 30));
+        window.TouchEnd(fingerA, new Point(seat.X - 30, seat.Y - 30));
+        window.TouchEnd(fingerB, far);
+
+        clicks.Should().Be(0, "双指手势不应当作点击");
+        drops.Should().Be(0, "双指手势不应当作拖动座位");
+    }
+
+    [AvaloniaFact]
+    public void 双指缩放结束后_单指点击仍然可用()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateDisabledSnapshot());
+
+        var clicks = 0;
+        canvas.SeatClicked += (_, _) => clicks++;
+
+        var center = ToScreen(canvas, new Point(100, 60));
+        var fingerA = window.TouchBegin(new Point(center.X - 40, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 40, center.Y));
+        window.TouchEnd(fingerA, new Point(center.X - 40, center.Y));
+        window.TouchEnd(fingerB, new Point(center.X + 40, center.Y));
+
+        clicks.Should().Be(0);
+
+        // 双指手势后画布必须回到干净的待命状态：单指点击照常生效
+        var seat = ToScreen(canvas, new Point(110, 10));
+        var fingerC = window.TouchBegin(seat);
+        window.TouchEnd(fingerC, seat);
+
+        clicks.Should().Be(1, "双指手势结束后单指点击必须恢复");
+    }
 }

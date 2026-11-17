@@ -190,6 +190,25 @@ public sealed class SeatingCanvas : Control
         InvalidateVisual();
     }
 
+    /// <summary>
+    /// 触摸拖动中的学生姓名（null 表示没有拖拽）：在指针位置绘制姓名幽灵，
+    /// 并高亮命中的座位。触摸设备不支持系统 DnD，拖名字必须由画布自己画。
+    /// </summary>
+    public void SetDragGhost(string? label, Point? pointerInCanvas)
+    {
+        _touchGhostLabel = label;
+        _touchGhostPosition = pointerInCanvas;
+        InvalidateVisual();
+    }
+
+    /// <summary>按画布坐标命中座位并返回（拖名字时外部按指针位置查询目标）。</summary>
+    public SeatVisual? HitTestSeatAt(Point pointInCanvas) => HitTestSeat(pointInCanvas);
+
+    /// <summary>手写笔悬停是否命中座位（测试/诊断用）。</summary>
+
+    /// <summary>是否正在显示触摸拖名字的幽灵标签（测试用）。</summary>
+    internal bool DragGhostVisibleForTest => !string.IsNullOrEmpty(_touchGhostLabel);
+
     /// <summary>围绕指定点缩放（保持该点在光标下不漂移）。</summary>
     public void ZoomAt(double factor, Point center)
     {
@@ -331,6 +350,8 @@ public sealed class SeatingCanvas : Control
             DrawSeats(context, snapshot, palette, zoom, contentOffset);
             DrawDragGhost(context, palette);
         }
+
+        DrawTouchGhost(context, palette);
 
         if (sw is not null)
         {
@@ -523,6 +544,28 @@ public sealed class SeatingCanvas : Control
         }
     }
 
+    /// <summary>
+    /// 触摸拖名字的幽灵标签（屏幕坐标，不随板面缩放）：手指下方显示被拖动的姓名，
+    /// 让「正拖着一个学生」这件事在触屏上可见。
+    /// </summary>
+    private void DrawTouchGhost(DrawingContext context, Palette palette)
+    {
+        if (string.IsNullOrEmpty(_touchGhostLabel) || _touchGhostPosition is not { } position)
+            return;
+
+        var text = ResolveText(_touchGhostLabel, 13, palette.SeatLabelFg, TextSlot.Faint, 220, 40);
+        const double paddingX = 8;
+        const double paddingY = 4;
+        var rect = new Rect(
+            position.X - (text.Width / 2) - paddingX,
+            position.Y - (text.Height) - 14 - paddingY,
+            text.Width + (paddingX * 2),
+            text.Height + (paddingY * 2));
+
+        context.DrawRectangle(palette.GhostBg, palette.DropTargetPen, rect, 6, 6);
+        context.DrawText(text, new Point(rect.X + paddingX, rect.Y + paddingY));
+    }
+
     private void DrawDragGhost(DrawingContext context, Palette palette)
     {
         if (!_isDragging || _dragSeatId is null) return;
@@ -589,6 +632,12 @@ public sealed class SeatingCanvas : Control
     private bool _isDragging;
     private bool _isPanning;
     private Point _pointerPosition;
+
+    /// <summary>最近一次指针在画布内移动的位置（测试/诊断用）。</summary>
+    internal Point LastPointerPositionForTest => _pointerPosition;
+
+    /// <summary>最近一次指针事件收到的原始位置（窗口坐标，测试/诊断用）。</summary>
+    internal Point RawPointerPositionForTest { get; private set; }
     private Point _pressPosition;
     private Point _dragBoardPosition;
     private Vector _dragGrabOffset;
@@ -596,7 +645,28 @@ public sealed class SeatingCanvas : Control
     /// <summary>当前手势的归属指针（触摸/鼠标/手写笔）；非 null 时忽略其它指针的按下。</summary>
     private IPointer? _activePointer;
     private bool _isPointerPressed;
+
+    // ── 双指缩放（触摸设备没有滚轮，捏合是唯一顺手的缩放手势） ──
+    /// <summary>第一根手指：双指缩放的锚点参照之一。</summary>
+    private IPointer? _pinchFirstPointer;
+    private Point _pinchFirstPosition;
+    /// <summary>双指缩放中：真 = 正在按两根手指的间距缩放。</summary>
+    private bool _pinchActive;
+    /// <summary>双指手势已识别（期间忽略第三根手指与单指拖拽/点击）。</summary>
+    private bool _pinchGestureSeen;
+    /// <summary>起点时两指间距（像素；小于 <see cref="MinPinchSpan"/> 时不做比值缩放）。</summary>
+    private double _pinchStartSpan;
+    /// <summary>已施加的缩放倍数：每帧只应用增量，避免累积误差与中心漂移。</summary>
+    private double _pinchAppliedScale = 1;
+    /// <summary>双指手势期间的合并后中心点（屏幕坐标）。</summary>
+    private Point _pinchLastCenter;
+
+    /// <summary>两指间距低于该值（像素）时比值不稳定，退化为纯平移。</summary>
+    private const double MinPinchSpan = 12;
+
     private string? _externalDropTargetId;
+    private string? _touchGhostLabel;
+    private Point? _touchGhostPosition;
     private bool _isHoveringSeat;
     private bool _autoFitPending = true;
     private bool _autoFitScheduled;
@@ -639,13 +709,33 @@ public sealed class SeatingCanvas : Control
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
         var props = e.GetCurrentPoint(this).Properties;
+        RawPointerPositionForTest = e.GetPosition(null);
 
         // 触摸/手写笔没有「左键」概念（IsLeftButtonPressed 恒为 false），
         // 必须按指针类型放行，否则点座位/拖座位/平移在触屏上全部失效。
         var isTouch = e.Pointer.Type is PointerType.Touch or PointerType.Pen;
         if (!isTouch && !props.IsLeftButtonPressed) return;
 
-        // 忽略已经在处理的第二根手指，避免双指时状态机错乱
+        // 双指（触摸）→ 进入双指缩放，而不是把第二根手指丢掉：
+        // 触摸设备上没有滚轮，双指捏合是唯一顺手的放大/缩小手势。
+        var isSecondTouch = _activePointer is not null
+            && !ReferenceEquals(_activePointer, e.Pointer)
+            && _activePointer.Type == PointerType.Touch
+            && e.Pointer.Type == PointerType.Touch;
+        if (isSecondTouch)
+        {
+            if (TryStartPinch(e))
+                return;
+
+            // 同一双指组合已经识别过，第二根手指的后续按下/移动不再参与单指状态机
+            if (_pinchActive)
+            {
+                e.Pointer.Capture(this);
+                return;
+            }
+        }
+
+        // 忽略其它指针（鼠标/笔的第二路输入），避免状态机错乱
         if (_activePointer is not null && !ReferenceEquals(_activePointer, e.Pointer))
             return;
 
@@ -679,7 +769,8 @@ public sealed class SeatingCanvas : Control
             return;
         }
 
-        // 空白处：单指/鼠标平移；拾取模式下空白处保留点击（由外层关闭）
+        // 空白处：单指/鼠标平移，触摸端先保持惰性（不进入拖拽判定），
+        // 见 OnPointerMoved 中对触摸空白的处理。
         _isPanning = true;
         _panLastPosition = new Vector(_pointerPosition.X, _pointerPosition.Y);
         // 触摸端没有鼠标指针，改游标只是白做，还可能残留成拖动形视觉
@@ -692,6 +783,14 @@ public sealed class SeatingCanvas : Control
     {
         base.OnPointerMoved(e);
         _pointerPosition = e.GetPosition(this);
+        RawPointerPositionForTest = e.GetPosition(null);
+
+        // 双指缩放：任何一根手指移动都要重新计算缩放与中心平移
+        if (_pinchGestureSeen)
+        {
+            UpdatePinch(e.GetPosition(this));
+            return;
+        }
 
         // 触摸/手写笔不维护悬停游标（没有悬停态），仅记录位置
         if (e.Pointer.Type is PointerType.Touch or PointerType.Pen && !_isPanning && _dragSeatId is null)
@@ -700,8 +799,22 @@ public sealed class SeatingCanvas : Control
         if (_isPanning)
         {
             var current = new Vector(_pointerPosition.X, _pointerPosition.Y);
-            PanBy(current - _panLastPosition);
+            var delta = current - _panLastPosition;
             _panLastPosition = current;
+
+            // 触摸平移也走阈值：手指刚按下就抖一下不再移动板面，
+            // 让「点选名单后点座位」的轻触不会把板面推走。
+            if (e.Pointer.Type is PointerType.Touch or PointerType.Pen && !_isDragging)
+            {
+                if (Math.Abs(_pointerPosition.X - _pressPosition.X) <= DragThreshold &&
+                    Math.Abs(_pointerPosition.Y - _pressPosition.Y) <= DragThreshold)
+                {
+                    return;
+                }
+                _isDragging = true;
+            }
+
+            PanBy(delta);
             return;
         }
 
@@ -745,6 +858,17 @@ public sealed class SeatingCanvas : Control
     {
         base.OnPointerReleased(e);
 
+        // 双指缩放：抬起任一参与的手指即结束手势（另一指继续按着也不再切换成拖拽）
+        if (_pinchGestureSeen
+            && (ReferenceEquals(e.Pointer, _pinchFirstPointer) || ReferenceEquals(e.Pointer, _activePointer)))
+        {
+            CancelPinch();
+            _isPointerPressed = false;
+            e.Pointer.Capture(null);
+            EndGestureSoon();
+            return;
+        }
+
         // 先记录「已抬起」再分派事件：CompleteGesture 的 finally 会复位状态，
         // 而正常抬起时 Avalonia 也是先 Capture(null) 再派发 Released，
         // OnPointerCaptureLost 靠这个标志区分「正常抬起」与「真正被打断」。
@@ -764,6 +888,16 @@ public sealed class SeatingCanvas : Control
     /// </summary>
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
+        // 双指缩放期间任一根手指丢捕获：同样结束手势，避免缩放卡在半路
+        if (_pinchGestureSeen
+            && (ReferenceEquals(e.Pointer, _pinchFirstPointer) || ReferenceEquals(e.Pointer, _activePointer)))
+        {
+            CancelPinch();
+            _isPointerPressed = false;
+            EndGestureSoon();
+            return;
+        }
+
         if (_activePointer is null) return;
 
         // 只丢了一半：多指/触控板场景下另一根指针抢了捕获，但这一轮手势本身还在，
@@ -854,9 +988,108 @@ public sealed class SeatingCanvas : Control
         _dragGrabOffset = default;
         _activePointer = null;
         _isPointerPressed = false;
+        _pinchFirstPointer = null;
+        _pinchActive = false;
+        _pinchGestureSeen = false;
+        _pinchAppliedScale = 1;
         Cursor = new Cursor(StandardCursorType.Arrow);
         InvalidateVisual();
     }
+
+    // ─────────────── 双指缩放 ───────────────
+
+    /// <summary>
+    /// 第二根手指按下：识别为双指缩放手势，并放弃已经在进行的单指拖拽/平移。
+    /// 触摸屏上没有滚轮，捏合缩放是唯一的缩放入口。
+    /// </summary>
+    private bool TryStartPinch(PointerPressedEventArgs e)
+    {
+        if (_activePointer is null) return false;
+
+        // 单指阶段已经拖起座位（超过阈值）时保持拖拽语义，避免拖动中被打断
+        if (_isDragging) return false;
+
+        _pinchFirstPointer = _activePointer;
+        _pinchFirstPosition = _pointerPosition;
+        _pinchGestureSeen = true;
+
+        // 丢掉单指阶段的拖拽/平移状态，防止捏合时座位跟着跑
+        _dragSeatId = null;
+        _dragTargetId = null;
+        _isDragging = false;
+        _isPanning = false;
+
+        _activePointer = e.Pointer;
+        _isPointerPressed = true;
+
+        var second = e.GetPosition(this);
+        _pinchStartSpan = Distance(_pinchFirstPosition, second);
+        _pinchAppliedScale = 1;
+        _pinchLastCenter = Midpoint(_pinchFirstPosition, second);
+        _pinchActive = _pinchStartSpan >= MinPinchSpan;
+
+        e.Pointer.Capture(this);
+        BeginGesture();
+        return true;
+    }
+
+    /// <summary>
+    /// 双指移动：按两指间距的比例缩放（以两指中心为锚点），中心位移同时平移板面。
+    /// </summary>
+    private void UpdatePinch(Point position)
+    {
+        if (ReferenceEquals(_activePointer, _pinchFirstPointer))
+            _pinchFirstPosition = position;
+        else
+            _pointerPosition = position;
+
+        var span = Distance(_pinchFirstPosition, _pointerPosition);
+        var center = Midpoint(_pinchFirstPosition, _pointerPosition);
+
+        if (!_pinchActive)
+        {
+            if (span < MinPinchSpan)
+            {
+                // 两指太近，比值不稳定：只跟随中心点平移
+                PanBy(center - _pinchLastCenter);
+                _pinchLastCenter = center;
+                return;
+            }
+
+            _pinchStartSpan = span;
+            _pinchAppliedScale = 1;
+            _pinchLastCenter = center;
+            _pinchActive = true;
+            InvalidateVisual();
+            return;
+        }
+
+        // 每帧只应用「相对上次」的增量倍数，手指间距比即缩放比
+        var ratio = span / _pinchStartSpan;
+        var delta = ratio / Math.Max(_pinchAppliedScale, 1e-6);
+        if (Math.Abs(delta - 1) > 1e-4)
+            ZoomAt(delta, center);
+
+        _pinchAppliedScale = ratio;
+        PanBy(center - _pinchLastCenter);
+        _pinchLastCenter = center;
+    }
+
+    /// <summary>双指手势结束（抬手 / 捕获丢失 / 被系统打断）：清空双指状态。</summary>
+    private void CancelPinch()
+    {
+        _pinchFirstPointer = null;
+        _pinchActive = false;
+        _pinchGestureSeen = false;
+        _pinchAppliedScale = 1;
+        ResetPointerState();
+    }
+
+    private static double Distance(Point a, Point b)
+        => Math.Sqrt(((a.X - b.X) * (a.X - b.X)) + ((a.Y - b.Y) * (a.Y - b.Y)));
+
+    private static Point Midpoint(Point a, Point b)
+        => new((a.X + b.X) / 2, (a.Y + b.Y) / 2);
 
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)
     {
