@@ -39,11 +39,11 @@ public partial class MultiStudentPickerViewModel : ViewModelBase
         ? Resources.StudentPicker_MultiPlaceholder
         : string.Format(Resources.StudentPicker_MultiSelectedFmt, SelectedCount);
 
-    /// <summary>从学生列表加载可选项（按姓名自然序），保留已选状态。</summary>
+    /// <summary>从学生列表加载可选项（保持名单导入顺序），保留已选状态。</summary>
     public void LoadStudents(IEnumerable<SeatFlow.Core.Models.Student> students)
     {
         var selected = new HashSet<string>(SelectedIds, StringComparer.Ordinal);
-        _allStudents = [.. Helpers.StudentSorter.Sort(students)
+        _allStudents = [.. students
             .Select(s => new StudentPickerItem { Id = s.Id, Name = s.Name })];
         Rebuild(selected);
     }

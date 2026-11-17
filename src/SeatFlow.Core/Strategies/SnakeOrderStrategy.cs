@@ -7,19 +7,6 @@ using Microsoft.Extensions.Logging.Abstractions;
 
 namespace SeatFlow.Core.Strategies
 {
-    /// <summary>蛇形顺序的学生排序规则。</summary>
-    public enum SnakeSortBy
-    {
-        /// <summary>名单顺序（数据集/工作区中的原始顺序）。</summary>
-        Input,
-        /// <summary>姓名自然序（汉字按拼音、数字按大小）。</summary>
-        Name,
-        /// <summary>身高（未填写身高的学生排在最后）。</summary>
-        Height,
-        /// <summary>性别（男 → 女 → 其他/未知）。</summary>
-        Gender
-    }
-
     /// <summary>蛇形顺序的起始方向。</summary>
     public enum SnakeDirection
     {
@@ -31,7 +18,7 @@ namespace SeatFlow.Core.Strategies
 
     /// <summary>
     /// 蛇形顺序策略（Priority=10，在随机填充之前执行）。
-    /// 按选定规则排序学生（默认名单顺序），并按选定走向确定性填充空座：
+    /// 按名单（导入表格）原始顺序填充空座，并按选定走向确定性推进：
     /// 网格逐行蛇形（相邻行反向）、环形逐环交替方向、自由点按行分组交替方向；
     /// 可关闭蛇形（逐行同向）并设置起始方向（正向/反向）。
     /// 适合考场式排座等需要可预测顺序的场景。
@@ -90,8 +77,8 @@ namespace SeatFlow.Core.Strategies
             }
 
             _logger.LogInformation(
-                "SnakeOrder 策略完成：排序规则 {SortBy}（{Direction}），蛇形 {Serpentine}，起始 {Start}，分配 {Assigned} 名学生",
-                _config.SortBy, _config.SortDescending ? "降序" : "升序",
+                "SnakeOrder 策略完成：{Direction}，蛇形 {Serpentine}，起始 {Start}，分配 {Assigned} 名学生",
+                _config.SortDescending ? "按名单倒序" : "按名单顺序",
                 _config.Serpentine, _config.StartDirection, assigned);
             workspace.LogInfo(Id, DisplayNameConst, "SnakeOrder_Assigned", assigned);
             return Task.FromResult(new StrategyExecutionResult { Success = true });
@@ -100,47 +87,18 @@ namespace SeatFlow.Core.Strategies
         /// <inheritdoc />
         public ValidationResult ValidateConfiguration() => new() { IsValid = true };
 
-        /// <summary>按配置的规则与方向排序学生。</summary>
+        /// <summary>
+        /// 学生的填充顺序。
+        /// 内置的「按姓名 / 身高 / 性别」排序方式已按需求移除，固定使用名单（工作区）顺序，
+        /// 即导入表格时的原始行序；<see cref="SnakeOrderConfiguration.SortDescending"/> 仅在此顺序上反向。
+        /// </summary>
         private List<Student> OrderStudents(IEnumerable<Student> students)
         {
             var list = students.ToList();
-            bool desc = _config.SortDescending;
-
-            switch (_config.SortBy)
-            {
-                case SnakeSortBy.Name:
-                    {
-                        var query = desc
-                            ? list.OrderByDescending(s => s.Name, NaturalStringComparer.Instance)
-                            : list.OrderBy(s => s.Name, NaturalStringComparer.Instance);
-                        return [.. query.ThenBy(s => s.Id, StringComparer.Ordinal)];
-                    }
-                case SnakeSortBy.Height:
-                    return [.. list
-                        .OrderBy(s => s.Height.HasValue ? 0 : 1)
-                        .ThenBy(s => desc ? -(s.Height ?? 0f) : s.Height ?? 0f)
-                        .ThenBy(s => s.Name, NaturalStringComparer.Instance)
-                        .ThenBy(s => s.Id, StringComparer.Ordinal)];
-                case SnakeSortBy.Gender:
-                    return [.. list
-                        .OrderBy(s => s.Gender is null or Gender.Unknown ? 1 : 0)
-                        .ThenBy(s => desc ? -GenderRank(s.Gender) : GenderRank(s.Gender))
-                        .ThenBy(s => s.Name, NaturalStringComparer.Instance)
-                        .ThenBy(s => s.Id, StringComparer.Ordinal)];
-                default: // Input：名单（工作区）顺序
-                    if (desc)
-                        list.Reverse();
-                    return list;
-            }
+            if (_config.SortDescending)
+                list.Reverse();
+            return list;
         }
-
-        private static int GenderRank(Gender? gender) => gender switch
-        {
-            Gender.Male => 0,
-            Gender.Female => 1,
-            Gender.Other => 2,
-            _ => 3
-        };
 
         /// <summary>按类型与几何坐标生成座位顺序；<paramref name="serpentine"/> 控制是否交替方向，<paramref name="reverseStart"/> 控制起始方向。</summary>
         private static IEnumerable<Seat> OrderSeats(IEnumerable<Seat> seats, bool serpentine, bool reverseStart)
@@ -203,10 +161,7 @@ namespace SeatFlow.Core.Strategies
         /// </summary>
         public class SnakeOrderConfiguration
         {
-            /// <summary>学生排序规则（默认名单顺序）。</summary>
-            public SnakeSortBy SortBy { get; set; } = SnakeSortBy.Input;
-
-            /// <summary>排序是否降序（默认升序）。</summary>
+            /// <summary>填充顺序是否反向（在名单原始顺序上倒序；内置排序规则已移除）。</summary>
             public bool SortDescending { get; set; }
 
             /// <summary>是否采用蛇形走向（true=相邻行/环反向，false=逐行/环同向）。</summary>

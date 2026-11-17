@@ -641,7 +641,7 @@ public partial class SettingsViewModel : ViewModelBase, IFileDropHandler, IPageL
     private void OpenDataDirectory()
     {
         var path = string.IsNullOrWhiteSpace(DataDirectory)
-            ? AppEnvironment.DefaultDataDirectory
+            ? AppEnvironment.ResolveDataDirectory()
             : DataDirectory;
 
         try

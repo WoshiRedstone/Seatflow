@@ -72,7 +72,7 @@ public interface ISeatSetsService
 
     /// <summary>
     /// 在可执行文件目录中自动发现 .seatsets 文件。
-    /// 用于首次启动且 AppData 不存在时的自动导入场景。
+    /// 用于首次启动且数据目录不存在时的自动导入场景。
     /// 浏览器端始终返回 null（无文件系统）。
     /// </summary>
     /// <param name="ct">取消令牌。</param>

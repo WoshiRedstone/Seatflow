@@ -63,16 +63,16 @@ namespace SeatFlow.Presentation.Avalonia
             if (seatsetsFilePath != null && TryForwardToExistingInstance(seatsetsFilePath))
                 return;
 
-            // 在 DI 创建 AppData/Logs 之前扫描自动导入文件
-            // AddSeatFlowApplication 会创建 Logs 目录使 AppData 存在，导致后续检查失效
+            // 在 DI 创建数据目录/Logs 之前扫描自动导入文件
+            // AddSeatFlowApplication 会创建 Logs 目录使数据目录存在，导致后续首启判断失效
             var autoImportPath = DiscoverAutoImportSeatSetsFile();
 
             using var mutex = new Mutex(true, @"Global\SeatFlow_SeatingArrangement", out bool isFirstInstance);
 
             var services = new ServiceCollection();
-            // 使用 OS 标准数据目录（而非 exe 同目录）
+            // 数据目录固定在程序目录下的 SeatFlowData（便携），程序目录不可写时回退到用户目录
             services.AddSeatFlowApplication(
-                AppEnvironment.DefaultDataDirectory);
+                AppEnvironment.ResolveDataDirectory());
 
             // 注册 OpenTelemetry 遥测（必须在 AddSeatFlowApplication 之后，依赖 IAppSettingsRepository）
             services.AddSeatFlowTelemetry();
@@ -240,7 +240,7 @@ namespace SeatFlow.Presentation.Avalonia
 
         /// <summary>
         /// 在 HKCU 中注册/刷新 .seatsets 文件关联（仅 Windows，无需管理员权限）。
-        /// 仅在首次启动（AppData 不存在）或注册表值与当前不一致时写入，
+        /// 注册表值与当前不一致时写入即可；路径变化（便携目录移动）会自然触发重写，
         /// 避免每次启动无意义的磁盘 I/O。写入后通知 Shell 刷新图标缓存。
         /// </summary>
         private static void RegisterSeatSetsFileAssociation()
@@ -255,7 +255,6 @@ namespace SeatFlow.Presentation.Avalonia
                     return;
 
                 var progId = "SeatFlow.seatsets";
-                var appDataExists = Directory.Exists(AppEnvironment.DefaultDataDirectory);
                 var iconValue = $"\"{exePath}\",0";
                 var cmdValue = $"\"{exePath}\" \"%1\"";
                 bool changed = false;
@@ -263,7 +262,7 @@ namespace SeatFlow.Presentation.Avalonia
                 using var extKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
                     @"Software\Classes\.seatsets");
                 var oldProgId = extKey.GetValue("") as string;
-                if (!appDataExists || !string.Equals(oldProgId, progId, StringComparison.Ordinal))
+                if (!string.Equals(oldProgId, progId, StringComparison.Ordinal))
                 {
                     extKey.SetValue("", progId);
                     changed = true;
@@ -272,7 +271,7 @@ namespace SeatFlow.Presentation.Avalonia
                 using var progKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
                     $@"Software\Classes\{progId}");
                 var oldDesc = progKey.GetValue("") as string;
-                if (!appDataExists || !string.Equals(oldDesc, "SeatFlow Data Package", StringComparison.Ordinal))
+                if (!string.Equals(oldDesc, "SeatFlow Data Package", StringComparison.Ordinal))
                 {
                     progKey.SetValue("", "SeatFlow Data Package");
                     changed = true;
@@ -281,7 +280,7 @@ namespace SeatFlow.Presentation.Avalonia
                 using var iconKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
                     $@"Software\Classes\{progId}\DefaultIcon");
                 var oldIcon = iconKey.GetValue("") as string;
-                if (!appDataExists || !string.Equals(oldIcon, iconValue, StringComparison.Ordinal))
+                if (!string.Equals(oldIcon, iconValue, StringComparison.Ordinal))
                 {
                     iconKey.SetValue("", iconValue);
                     changed = true;
@@ -290,7 +289,7 @@ namespace SeatFlow.Presentation.Avalonia
                 using var cmdKey = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
                     $@"Software\Classes\{progId}\shell\open\command");
                 var oldCmd = cmdKey.GetValue("") as string;
-                if (!appDataExists || !string.Equals(oldCmd, cmdValue, StringComparison.Ordinal))
+                if (!string.Equals(oldCmd, cmdValue, StringComparison.Ordinal))
                 {
                     cmdKey.SetValue("", cmdValue);
                     changed = true;
@@ -307,16 +306,17 @@ namespace SeatFlow.Presentation.Avalonia
         }
 
         /// <summary>
-        /// 在 AppData 目录创建之前扫描 exe 目录中的 .seatsets 文件用于自动导入。
-        /// 仅在 AppData 不存在时生效（即真正的首次启动）。
+        /// 在数据目录创建之前扫描 exe 目录中的 .seatsets 文件用于自动导入。
+        /// 仅在数据目录（程序目录下的 SeatFlowData）不存在时生效（即真正的首次启动）。
         /// 扫描时进行轻量前置校验：大小合理、可解析为 JSON、含 formatVersion 字段。
         /// </summary>
         private static string? DiscoverAutoImportSeatSetsFile()
         {
             try
             {
-                var appDataPath = AppEnvironment.DefaultDataDirectory;
-                if (Directory.Exists(appDataPath))
+                // 便携模式下数据目录就在 exe 同目录的子文件夹里，不能用它判断首启
+                var dataPath = AppEnvironment.DefaultDataDirectory;
+                if (Directory.Exists(dataPath))
                     return null;
 
                 // 确定扫描目录：Velopack 安装时扫描 RootAppDir，开发/便携模式扫描 ExeDirectory

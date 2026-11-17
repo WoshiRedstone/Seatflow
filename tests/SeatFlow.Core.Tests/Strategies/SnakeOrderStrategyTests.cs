@@ -110,93 +110,50 @@ public class SnakeOrderStrategyTests
         strategy.ValidateConfiguration().IsValid.Should().BeTrue();
     }
 
+
     [Fact]
-    public async Task ExecuteAsync_SortByName_UsesNaturalOrder()
+    public async Task ExecuteAsync_FollowsRosterOrder_NoImplicitNameSort()
     {
+        // 表格导入顺序：王五 / 张三 / 李四 —— 与姓名序（李四/王五/张三）不同，
+        // 用于锁定「不再按姓名排序」这一需求。
         var students = new[]
         {
+            new Student { Id = "c", Name = "王五" },
             new Student { Id = "a", Name = "张三" },
-            new Student { Id = "b", Name = "李四" },
-            new Student { Id = "c", Name = "王五" }
+            new Student { Id = "b", Name = "李四" }
         };
         var seats = StrategyTestHelpers.CreateGridSeats((1, 1), (1, 2), (1, 3));
         var ws = new SeatingWorkspace(students, [.. seats.Cast<Seat>()]);
 
-        var config = new SnakeOrderStrategy.SnakeOrderConfiguration { SortBy = SnakeSortBy.Name };
-        var strategy = new SnakeOrderStrategy(config);
+        var strategy = new SnakeOrderStrategy();
         await strategy.ExecuteAsync(ws, CancellationToken.None);
 
-        SeatAt(seats, 1, 1).OccupantId.Should().Be("b"); // 李四
-        SeatAt(seats, 1, 2).OccupantId.Should().Be("c"); // 王五
-        SeatAt(seats, 1, 3).OccupantId.Should().Be("a"); // 张三
+        SeatAt(seats, 1, 1).OccupantId.Should().Be("c"); // 王五（第一行原样）
+        SeatAt(seats, 1, 2).OccupantId.Should().Be("a"); // 张三
+        SeatAt(seats, 1, 3).OccupantId.Should().Be("b"); // 李四
     }
 
     [Fact]
-    public async Task ExecuteAsync_SortByHeight_AscendingMissingLast()
+    public async Task ExecuteAsync_SortDescending_ReversesRosterOrder()
     {
         var students = new[]
         {
-            new Student { Id = "tall", Name = "tall", Height = 170 },
-            new Student { Id = "none", Name = "none" },
-            new Student { Id = "short", Name = "short", Height = 150 }
+            new Student { Id = "c", Name = "王五" },
+            new Student { Id = "a", Name = "张三" },
+            new Student { Id = "b", Name = "李四" }
         };
         var seats = StrategyTestHelpers.CreateGridSeats((1, 1), (1, 2), (1, 3));
         var ws = new SeatingWorkspace(students, [.. seats.Cast<Seat>()]);
 
-        var config = new SnakeOrderStrategy.SnakeOrderConfiguration { SortBy = SnakeSortBy.Height };
+        var config = new SnakeOrderStrategy.SnakeOrderConfiguration { SortDescending = true };
         var strategy = new SnakeOrderStrategy(config);
         await strategy.ExecuteAsync(ws, CancellationToken.None);
 
-        SeatAt(seats, 1, 1).OccupantId.Should().Be("short");
-        SeatAt(seats, 1, 2).OccupantId.Should().Be("tall");
-        SeatAt(seats, 1, 3).OccupantId.Should().Be("none");
+        SeatAt(seats, 1, 1).OccupantId.Should().Be("b"); // 李四（末行优先）
+        SeatAt(seats, 1, 2).OccupantId.Should().Be("a"); // 张三
+        SeatAt(seats, 1, 3).OccupantId.Should().Be("c"); // 王五
     }
 
-    [Fact]
-    public async Task ExecuteAsync_SortByHeight_DescendingMissingStillLast()
-    {
-        var students = new[]
-        {
-            new Student { Id = "tall", Name = "tall", Height = 170 },
-            new Student { Id = "none", Name = "none" },
-            new Student { Id = "short", Name = "short", Height = 150 }
-        };
-        var seats = StrategyTestHelpers.CreateGridSeats((1, 1), (1, 2), (1, 3));
-        var ws = new SeatingWorkspace(students, [.. seats.Cast<Seat>()]);
-
-        var config = new SnakeOrderStrategy.SnakeOrderConfiguration
-        {
-            SortBy = SnakeSortBy.Height,
-            SortDescending = true
-        };
-        var strategy = new SnakeOrderStrategy(config);
-        await strategy.ExecuteAsync(ws, CancellationToken.None);
-
-        SeatAt(seats, 1, 1).OccupantId.Should().Be("tall");
-        SeatAt(seats, 1, 2).OccupantId.Should().Be("short");
-        SeatAt(seats, 1, 3).OccupantId.Should().Be("none");
-    }
-
-    [Fact]
-    public async Task ExecuteAsync_SortByGender_MaleFemaleThenUnknown()
-    {
-        var students = new[]
-        {
-            new Student { Id = "f", Name = "f", Gender = Gender.Female },
-            new Student { Id = "u", Name = "u" },
-            new Student { Id = "m", Name = "m", Gender = Gender.Male }
-        };
-        var seats = StrategyTestHelpers.CreateGridSeats((1, 1), (1, 2), (1, 3));
-        var ws = new SeatingWorkspace(students, [.. seats.Cast<Seat>()]);
-
-        var config = new SnakeOrderStrategy.SnakeOrderConfiguration { SortBy = SnakeSortBy.Gender };
-        var strategy = new SnakeOrderStrategy(config);
-        await strategy.ExecuteAsync(ws, CancellationToken.None);
-
-        SeatAt(seats, 1, 1).OccupantId.Should().Be("m");
-        SeatAt(seats, 1, 2).OccupantId.Should().Be("f");
-        SeatAt(seats, 1, 3).OccupantId.Should().Be("u");
-    }
 
     [Fact]
     public async Task ExecuteAsync_DirectionReverse_StartsRightToLeft()

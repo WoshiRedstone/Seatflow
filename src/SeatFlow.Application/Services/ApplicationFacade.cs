@@ -1338,7 +1338,6 @@ namespace SeatFlow.Application.Services
                 },
                 SnakeOrderStrategy so => new Dictionary<string, object?>
                 {
-                    ["SortBy"] = so.Config.SortBy.ToString(),
                     ["SortDescending"] = so.Config.SortDescending,
                     ["Serpentine"] = so.Config.Serpentine,
                     ["Direction"] = so.Config.StartDirection.ToString()
@@ -1381,8 +1380,6 @@ namespace SeatFlow.Application.Services
                     hp.Config.FrontRowCount = Math.Max(1, GetParamInt(parameters, "FrontRowCount"));
                     break;
                 case SnakeOrderStrategy so:
-                    if (parameters.ContainsKey("SortBy"))
-                        so.Config.SortBy = ParseEnum(GetParamString(parameters, "SortBy"), SnakeSortBy.Input);
                     if (parameters.ContainsKey("SortDescending"))
                         so.Config.SortDescending = GetParamBool(parameters, "SortDescending");
                     if (parameters.ContainsKey("Serpentine"))

@@ -6,36 +6,38 @@ using SeatFlow.Presentation.Avalonia.ViewModels;
 namespace SeatFlow.Presentation.Tests;
 
 /// <summary>
-/// 人员管理表格显示排序：姓名自然序 + Id 兜底（此前直接展示仓储按 GUID 排序的顺序）。
+/// 人员管理表格显示顺序：严格保持名单（导入表格）的原始先后顺序，
+/// 不做任何排序（此前的姓名自然序已按需求移除）。
 /// </summary>
 public class MemberStudentSortingTests
 {
     [Fact]
-    public void 应按姓名自然排序_同名按Id兜底()
+    public void 应按名单导入顺序展示_不做排序()
     {
+        // 故意给出与姓名序完全相反的列表：若仍存在排序，结果会被改写。
         var students = new List<Student>
         {
             new() { Id = "z", Name = "张三" },
             new() { Id = "b", Name = "学生10" },
             new() { Id = "a", Name = "学生2" },
             new() { Id = "c", Name = "李四" },
-            new() { Id = "d", Name = "李四" },
+            new() { Id = "d", Name = "阿克" },
         };
 
-        var sorted = MemberManagementViewModel.SortStudents(students)
+        var ordered = MemberManagementViewModel.OrderStudents(students)
             .Select(s => (s.Name, s.Id))
             .ToList();
 
-        sorted.Should().Equal(
-            ("李四", "c"),
-            ("李四", "d"),
-            ("学生2", "a"),
+        ordered.Should().Equal(
+            ("张三", "z"),
             ("学生10", "b"),
-            ("张三", "z"));
+            ("学生2", "a"),
+            ("李四", "c"),
+            ("阿克", "d"));
     }
 
     [Fact]
-    public void 学生选择器_按姓名自然排序_排除后保持有序()
+    public void 学生选择器_保持导入顺序_排除后仍保序()
     {
         var picker = new StudentPickerViewModel(NullDialogService.Instance);
         picker.LoadStudents(
@@ -45,10 +47,10 @@ public class MemberStudentSortingTests
             new Student { Id = "c", Name = "张三" },
         ]);
 
-        picker.Students.Select(s => s.Name).Should().Equal("学生2", "学生10", "张三");
+        picker.Students.Select(s => s.Name).Should().Equal("学生10", "学生2", "张三");
 
         picker.SetExcludedIds(["a"]);
         picker.Students.Select(s => s.Name)
-            .Should().Equal(["学生10", "张三"], "排除过滤后仍保持自然序");
+            .Should().Equal(["学生10", "张三"], "排除过滤不改变导入顺序");
     }
 }

@@ -98,7 +98,7 @@ cd scripts/build
 
 | 能力 | 桌面 | Web |
 |---|---|---|
-| 数据存储 | AppData 文件系统 | IndexedDB（`seatflow`/`files`） |
+| 数据存储 | 数据目录文件系统 | IndexedDB（`seatflow`/`files`） |
 | 数据迁移 | `.seatsets` 文件 | `.seatsets` 打包下载/上传（等价） |
 | XLSX 导入/导出 | EPPlus | ✅ EPPlus（WASM 验证通过） |
 | PDF 导出 | QuestPDF | ❌（WASM 下 QuestPDF 不可用） |

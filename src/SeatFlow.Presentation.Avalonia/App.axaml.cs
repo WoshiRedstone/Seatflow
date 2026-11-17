@@ -48,7 +48,7 @@ namespace SeatFlow.Presentation.Avalonia
         /// <summary>命令行传入的 .seatsets 文件路径（双击打开或命令行导入）；管道转发时会更新。</summary>
         private string? _pendingSeatSetsFilePath = pendingSeatSetsFilePath;
 
-        /// <summary>在 AppData 创建前自动扫描到的 .seatsets 文件路径（首次启动数据恢复）。</summary>
+        /// <summary>在数据目录创建前自动扫描到的 .seatsets 文件路径（首次启动数据恢复）。</summary>
         private readonly string? _autoImportSeatSetsPath = autoImportSeatSetsPath;
 
         /// <summary>单实例命名管道名（第二个进程通过它转发 .seatsets 文件路径）。</summary>
@@ -537,7 +537,7 @@ namespace SeatFlow.Presentation.Avalonia
             if (desktop is not null && !await RunStartupChecksAsync(desktop))
                 return;
 
-            // 在 AppData 创建前先检查自动导入 .seatsets（仅在 AppData 不存在时生效）
+            // 在数据目录创建前先检查自动导入 .seatsets（仅在数据目录不存在时生效）
             await CheckSeatSetsAutoImportAsync();
 
             // 1. 检测首启并落盘（必须在 RestoreSettings 之前，因为后者会创建 AppSettings.json）
@@ -558,10 +558,10 @@ namespace SeatFlow.Presentation.Avalonia
         }
 
         /// <summary>
-        /// 在 AppData 目录尚未包含用户数据时（首次启动），
+        /// 在数据目录尚未包含用户数据时（首次启动），
         /// 自动导入 exe 目录中预先放置的 .seatsets 文件。
         /// 文件路径在 DI 初始化前由 Program.DiscoverAutoImportSeatSetsFile 完成扫描，
-        /// 避免了 AddSeatFlowApplication 创建 AppData/Logs 导致的误判。
+        /// 避免了 AddSeatFlowApplication 创建数据目录/Logs 导致的误判。
         /// </summary>
         private async Task CheckSeatSetsAutoImportAsync()
         {

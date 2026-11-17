@@ -77,7 +77,7 @@ fill-in-order 模型：独立策略按 Priority 降序执行（先到先得，�
 | — | `GenderDeskMateStrategy` | 44（上下文） | 依赖 | 同桌性别搭配：默认男女搭配（可切同性同桌）；性别未知不判定；不符重掷，耗尽带警告强制 |
 | — | `NoDeskMateStrategy` | 42（上下文） | 依赖 | 「不为同桌」：同一搭配组内任意两人不互为同桌；组内去重、跨组允许；不符重掷，耗尽带警告强制 |
 | — | `NoRepeatDeskMateStrategy` | 40（上下文） | 依赖 | 检查相邻已占用座位的历史同桌重复；重复则重掷，耗尽后带警告强制 |
-| 4 | `SnakeOrderStrategy` | 10 | 独立 | 确定性填充：排序规则（名单顺序/姓名/身高/性别）+ 升降序 + 蛇形走向与起始方向，默认禁用 |
+| 4 | `SnakeOrderStrategy` | 10 | 独立 | 确定性填充：按名单导入顺序（可切倒序）+ 蛇形走向与起始方向，默认禁用 |
 | 5 | `RandomFillStrategy` | 1 | 独立+宿主 | 填剩余座位并宿主依赖策略；约束学生（同桌组）优先以减少重掷 |
 | 6 | `DefragStrategy` | 0 | 独立 | “扫地僧”：从后排搬无约束学生补前排空缺（可跨列），默认禁用；警告可能使先前策略结果失效 |
 
@@ -105,6 +105,9 @@ fill-in-order 模型：独立策略按 Priority 降序执行（先到先得，�
 - `IOobeService` / `OobeViewModel`：首次设置（OOBE）状态机，覆盖在 `MainView` 内，不新增 `PageKey`；`IsActive = IsVisible || IsHandoffVisible`。
 - `WatchdogService`：45s UI 挂起检测（仅桌面），UI 线程须定期 `Ping()`（`App.axaml.cs` 的 DispatcherTimer）。
 - `SeatingCanvas`：自绘 `Control.Render` 画布（Grid/Polar/Freeform 统一几何命中；拖拽/交换/平移/缩放/方向键虚拟焦点内置）。
+  **触摸/手写笔**按 `e.Pointer.Type` 放行（`IsLeftButtonPressed` 对触摸恒为 false），单指针状态机 + `OnPointerCaptureLost` 兜底复位；
+  未分配学生列表在触摸端不走系统 DnD（`DoDragDropAsync` 在触摸下 `await` 不返回会导致假死），改「点选 + 点座位 / 画布长按（`Gestures.Holding`）」。
+  详见 `docs/presentation/DragDrop.md`。
 
 ## 关键模式与约定
 
@@ -169,8 +172,9 @@ App 版本唯一来源是根目录 `version.json`（`commitId`/`buildDate` 由�
 
 ## 数据、文件与迁移
 
-**数据目录**（OS 标准；`AppSettings.DataDirectory` 可覆盖）：
-Windows `%APPDATA%\SeatFlow\` / Linux `~/.local/share/SeatFlow/` / macOS `~/Library/Application Support/SeatFlow/`。
+**数据目录**（便携优先；`AppSettings.DataDirectory` 可覆盖）：
+默认 `<程序目录>/SeatFlowData/`（`AppEnvironment.DefaultDataDirectory`，`ExeDirectory` 取自 `Environment.ProcessPath`）；
+程序目录不可写时 `AppEnvironment.ResolveDataDirectory()` 回退到 `%LOCALAPPDATA%\SeatFlow\`。
 结构：`AppSettings.json`、`Logs/`、`Venues/*.venue.json`、`Rosters/*.roster.json`、
 `Assignments/{venueId}/{yyyyMMdd}/*.json`、`StrategyConfig/{strategyId}[/*].config.json`。
 

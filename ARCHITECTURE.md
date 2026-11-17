@@ -263,7 +263,7 @@ public class StrategyExecutionPipeline
 | GenderDeskMateStrategy | 44 (context) | 依赖 | 在 RandomFill 中检查同桌两人的性别组合；默认男女搭配，可切换同性同桌；性别未填写不判定；不符时重掷，耗尽则强制分配 |
 | NoDeskMateStrategy | 42 (context) | 依赖 | 「不为同桌」：配置若干搭配组（多选选择器，成员存 Values["members"]），同组任意两人不互为同桌；组内去重、跨组并集；不符时重掷，耗尽则强制分配 |
 | NoRepeatDeskMateStrategy | 40 (context) | 依赖 | 在 RandomFill 中检查历史同桌重复，从快照提取过去的同桌对；重复时请求重掷，耗尽则强制分配 |
-| SnakeOrderStrategy | 10 | 独立 | 确定性填充空座：排序规则（名单顺序/姓名/身高/性别）+ 升降序，网格逐行蛇形/环形交替方向，可关闭蛇形并设置起始方向；适合考场式排座 |
+| SnakeOrderStrategy | 10 | 独立 | 确定性填充空座：按名单导入顺序（可切倒序）填充，网格逐行蛇形/环形交替方向，可关闭蛇形并设置起始方向；适合考场式排座 |
 | RandomFillStrategy | 1 | 独立+Host | 兜底填充剩余空座，约束学生（DeskMate 组）优先分配；托管依赖策略执行 |
 | DefragStrategy | 0 | 独立 | 后置碎片整理——将后排无约束学生前移填空隙（跨列允许），跳过固定座位和 DeskMate 组学生，记录有效性警告 |
 
@@ -330,10 +330,13 @@ UI 层通过 `LocalizeHelper.Resolve(dict)` 按 `CurrentUICulture` 解析。
 
 5.2 数据存储位置
 
-所有用户数据存储在 OS 标准应用数据目录（`AppEnvironment.DefaultDataDirectory`）：
-- Windows: `%APPDATA%\SeatFlow\`
-- Linux: `~/.local/share/SeatFlow/`
-- macOS: `~/Library/Application Support/SeatFlow/`
+所有用户数据默认存储在**程序目录下的 `SeatFlowData/`**（`AppEnvironment.DefaultDataDirectory`），
+整个程序目录可直接拷贝带走（portable）：
+
+- 程序目录（`AppEnvironment.ExeDirectory`，取自 `Environment.ProcessPath`，单文件发布也正确）/ `SeatFlowData/`
+
+`AppEnvironment.ResolveDataDirectory()` 会先尝试创建并写入便携目录；
+程序目录不可写（如安装在 `Program Files`）时自动回退到 `%LOCALAPPDATA%\SeatFlow\`（`FallbackDataDirectory`）。
 
 用户可通过设置页面的 `DataDirectory` 选项自定义路径。
 

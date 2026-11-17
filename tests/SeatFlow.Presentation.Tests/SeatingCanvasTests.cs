@@ -284,4 +284,116 @@ public class SeatingCanvasTests
         clicked!.SeatId.Should().Be("enabled");
         dropped.Should().BeFalse("拾取模式下普通座位也不进入拖拽");
     }
+
+    // ── 触摸交互（触屏上 IsLeftButtonPressed 恒为 false，必须按 PointerType 放行） ──
+
+    [AvaloniaFact]
+    public void 触摸_点击座位_触发点击()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateDisabledSnapshot());
+
+        SeatEventArgs? clicked = null;
+        canvas.SeatClicked += (_, e) => clicked = e;
+
+        var point = ToScreen(canvas, new Point(110, 10));
+        var touch = window.TouchBegin(point);
+        window.TouchEnd(touch, point);
+
+        clicked.Should().NotBeNull("触摸点击座位必须可用");
+        clicked!.SeatId.Should().Be("enabled");
+    }
+
+    [AvaloniaFact]
+    public void 触摸_拖动座位_触发拖拽放下()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateDisabledSnapshot());
+
+        SeatDropEventArgs? dropped = null;
+        canvas.SeatDropped += (_, e) => dropped = e;
+
+        var start = ToScreen(canvas, new Point(110, 10));
+        var end = ToScreen(canvas, new Point(160, 10));
+        var touch = window.TouchBegin(start);
+        window.TouchMove(touch, end);
+        window.TouchEnd(touch, end);
+
+        dropped.Should().NotBeNull("触摸拖动座位必须能进入拖拽");
+        dropped!.SourceSeatId.Should().Be("enabled");
+    }
+
+    [AvaloniaFact]
+    public void 触摸_拖动中途捕获丢失_下一次点击仍可响应()
+    {
+        // 假死回归：指针被系统吞掉（没有 Released）后，画布必须能自行恢复，
+        // 否则会永久停在拖动态，下一次点击毫无反应。
+        var (canvas, window) = CreateCanvasWindow(CreateDisabledSnapshot());
+
+        var clicks = 0;
+        canvas.SeatClicked += (_, _) => clicks++;
+
+        var start = ToScreen(canvas, new Point(110, 10));
+        var end = ToScreen(canvas, new Point(160, 10));
+        var touch = window.TouchBegin(start);
+        window.TouchMove(touch, end);
+        // 直接结束该指针（触发 CaptureLost / 丢失 Released 场景）
+        window.TouchEnd(touch, end);
+
+        var second = ToScreen(canvas, new Point(110, 10));
+        var touch2 = window.TouchBegin(second);
+        window.TouchEnd(touch2, second);
+
+        clicks.Should().Be(1, "上一次手势被中断后，新的触摸点击必须正常响应");
+        canvas.SelectedSeatId.Should().Be("enabled");
+    }
+
+    [AvaloniaFact]
+    public void 触摸_空白处拖动_平移板面()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+        var before = canvas.PanOffset;
+
+        var start = ToScreen(canvas, new Point(70, 100));
+        var end = new Point(start.X - 30, start.Y - 20);
+        var touch = window.TouchBegin(start);
+        window.TouchMove(touch, end);
+        window.TouchEnd(touch, end);
+
+        canvas.PanOffset.Should().NotBe(before, "触摸拖动空白处应平移板面");
+    }
+
+    [AvaloniaFact]
+    public void 鼠标_点击座位_按下到抬起之间丢失捕获_仍应触发点击()
+    {
+        // 回归：未分配学生列表在 PointerPressed 里启动系统拖放（DoDragDropAsync），
+        // 抬手时它会抢走 / 释放指针捕获；若捕获丢失就取消手势，点击会被吞掉，
+        // 表现为「点学生再点座位毫无反应」。
+        var (canvas, window) = CreateCanvasWindow(CreateDisabledSnapshot());
+
+        var clicks = 0;
+        canvas.SeatClicked += (_, _) => clicks++;
+
+        var point = ToScreen(canvas, new Point(110, 10));
+        window.MouseDown(point, MouseButton.Left);
+        canvas.RaiseEvent(new PointerCaptureLostEventArgs(canvas, new Pointer(0, PointerType.Mouse, true)));
+        window.MouseUp(point, MouseButton.Left);
+
+        clicks.Should().Be(1, "捕获丢失发生在按下期间、随后正常抬起时，点击不应被吞");
+    }
+
+    [AvaloniaFact]
+    public void 触摸_点击座位_按下到抬起之间丢失捕获_仍应触发点击()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateDisabledSnapshot());
+
+        var clicks = 0;
+        canvas.SeatClicked += (_, _) => clicks++;
+
+        var point = ToScreen(canvas, new Point(110, 10));
+        var touch = window.TouchBegin(point);
+        canvas.RaiseEvent(new PointerCaptureLostEventArgs(
+            canvas, new Pointer(1, PointerType.Touch, true)));
+        window.TouchEnd(touch, point);
+
+        clicks.Should().Be(1, "触摸点击在捕获丢失后仍应可用");
+    }
 }

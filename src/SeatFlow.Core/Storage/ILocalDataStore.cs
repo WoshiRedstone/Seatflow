@@ -1,7 +1,7 @@
 namespace SeatFlow.Core.Storage;
 
 /// <summary>
-/// 本地数据存储抽象。桌面端由文件系统实现（<c>AppData</c> 目录），
+/// 本地数据存储抽象。桌面端由文件系统实现（程序目录下的 <c>SeatFlowData</c>），
 /// 浏览器端（WASM）由 IndexedDB 实现。所有路径均为使用 <c>/</c> 分隔的
 /// <b>相对路径</b>，不含盘符或根（如 <c>Venues/abc.venue.json</c>）。
 /// 存储实现负责将相对路径映射到底层介质（文件系统子目录 / IndexedDB key）。

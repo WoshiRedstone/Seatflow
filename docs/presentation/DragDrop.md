@@ -169,11 +169,48 @@ if (e.Source is StyledElement src && src.DataContext is SeatDisplayItem)
 if (double.IsNaN(origin.X)) return;  // 哨兵检查，防止默认 (0,0) 触发平移
 ```
 
+## 触摸与手写笔（触屏假死防护）
+
+系统 DnD 与自绘手势在触摸端行为不同，必须显式区分指针类型：
+
+| 事实 | 影响 |
+|------|------|
+| 触摸/手写笔没有「左键」概念，`PointerPointProperties.IsLeftButtonPressed` 恒为 `false` | 只用 `IsLeftButtonPressed` 判定会让触屏上「点座位 / 拖座位 / 平移」全部失效 |
+| `e.Pointer.Type` 为 `PointerType.Touch` / `PointerType.Pen` | 判定改为「`isTouch` 直接放行，非触摸才检查左键」 |
+| 触摸按下后指针仍被列表捕获时，`DragOver`/`Drop` 不触发，`DoDragDropAsync` 的 `await` 永不返回 | **在 `PointerPressed` 里对触摸调用系统 DnD 会让列表与页面假死** |
+| Avalonia 12 没有 `OnPointerCancel` / `PointerCancelEventArgs`，但有 `OnPointerCaptureLost` 与 `Gestures.Holding` | 手势取消靠捕获丢失兜底；长按用 `Holding` 路由事件 |
+
+`SeatingCanvas` 的状态机约定：
+
+```csharp
+// 1) 放行触摸/手写笔
+var isTouch = e.Pointer.Type is PointerType.Touch or PointerType.Pen;
+if (!isTouch && !props.IsLeftButtonPressed) return;
+
+// 2) 单指针：已在处理时忽略第二根手指，且残留状态先清掉
+if (_activePointer is not null && !ReferenceEquals(_activePointer, e.Pointer)) return;
+if (_activePointer is not null) ResetPointerState();
+
+// 3) 结束手势统一走 CompleteGesture，finally 里无条件 ResetPointerState()
+// 4) 捕获丢失 = 放弃手势，绝不能让 _dragSeatId 残留
+protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e) { ... }
+```
+
+未分配学生列表的触摸路径（`SeatingArrangementView.axaml.cs`）：
+
+- **鼠标**：`DoDragDropAsync` 系统 DnD（保持原有体验）
+- **触摸/手写笔**：按下只做选中（`SelectedUnassignedStudent = student`），随后点座位即放置；
+  或在画布上长按（`Holding`，`HoldingState.Started`）把选中学生放入长按命中的空座位
+- 触摸端不设置鼠标游标（`Cursor`），避免残留拖动形鼠标指针
+
 ## 常见坑
 
 | 问题 | 现象 | 原因 | 修复 |
 |------|------|------|------|
 | 拖不动 | 按下拖动无反应 | 使用 `PointerMoved` 启动拖放 | 改用 `PointerPressed` + `DoDragDropAsync` |
+| 触屏假死（列表） | 触摸点一下未分配学生后整页无响应 | 触摸端 `DoDragDropAsync` 的 `await` 永不返回 | 触摸不走系统 DnD，改点选 + 长按放置 |
+| 触屏假死（画布） | 座位拖到一半松手后画布不再响应点击 | 捕获丢失未清 `_dragSeatId`，画布永久处于拖动态 | 重写 `OnPointerCaptureLost` + `ResetPointerState()` |
+| 触屏点座位没反应 | 点击/拖动/平移全部失效 | 用 `IsLeftButtonPressed` 判定 | 按 `e.Pointer.Type` 放行触摸与手写笔 |
 | 禁止光标 | 鼠标显示禁止符号 | 目标缺少 `AllowDrop="True"`，或 `e.Handled=true` 过早 + `DragEffects` 保持 `None` | 加 `AllowDrop`，`e.Handled` 移到验证后 |
 | 拖不到垃圾桶 | 拖到垃圾桶上无反应 | 垃圾桶缺少 `AllowDrop="True"` | 加 `AllowDrop` |
 | 拖动时画布乱移 | 座位拖动时画布同时平移 | 平移与座位拖放未隔离（行为时代 `CanvasZoomPan` 误触发） | M5 起由 `SeatingCanvas` 内部手势状态机隔离（历史方案：NaN 哨兵 + `OnPointerMoved` 检查） |

@@ -4,8 +4,18 @@
 
 ## [Unreleased]
 
+### Added
+- **便携数据目录**：默认数据目录从 OS 标准路径改为程序目录下的 `SeatFlowData/`（`AppEnvironment.DefaultDataDirectory`），整包连同数据一起拷走即可在任意机器上继续使用；程序目录不可写（如安装到 `Program Files`）时 `AppEnvironment.ResolveDataDirectory()` 自动回退到 `%LOCALAPPDATA%\SeatFlow\`，设置页「打开数据目录」跟随同一解析结果
+
 ### Changed
+- **移除名单排序**：导入学生名单后不再按姓名自动排序，人员管理页、未分配学生列表与单选/多选学生选择器一律保持表格导入的先后顺序；新增学生追加到末尾，重命名不再搬运行
+- **移除内置排序方式**：「蛇形顺序」策略删除「排序规则」（名单顺序/姓名/身高/性别）参数，只按名单导入顺序填充，保留倒序填充开关与蛇形走向/起始方向（策略版本 1.2.0，旧配置的 `SortBy` 反序列化时被忽略）
 - **依赖升级**：Avalonia 12.1.4 → 12.1.6（含 Desktop / Browser / Themes.Fluent / Fonts.Inter / Headless / Headless.XUnit / Skia）、SkiaSharp 与 `SkiaSharp.NativeAssets.Linux` 4.154.0 → 4.156.1、Microsoft.Extensions 10.0.14 → 11.0.0（含 `System.Security.Cryptography.Xml`）、OpenTelemetry 1.20.1 → 1.21.0、Markdig 1.5.1 → 1.6.0、QuestPDF 2026.9.1 → 2026.9.2、Microsoft.NET.Test.Sdk 18.11.0 → 18.12.0、xunit.v3 4.0.2 → 4.0.3（`Presentation.Tests` 继续锁定 3.2.2）；`vpk` / `Velopack` 1.2.161 已是最新稳定版，`avdt` 2.2.3 与 `run-script` 0.6.0 同为最新
+
+### Fixed
+- **触屏拖动待选座学生假死**：未分配学生列表此前在 `PointerPressed` 里直接 `await DragDrop.DoDragDropAsync(...)`，触摸下指针仍被列表捕获导致 `DragOver`/`Drop` 不触发、await 永不返回，列表与整页失去响应；现触摸/手写笔只做点选（再点目标座位即入座），系统拖放仅保留给鼠标，并新增画布长按（`Gestures.Holding`）把已选中的待分配学生直接放到位
+- **触屏点座位/拖座位/平移无响应**：`SeatingCanvas` 用 `IsLeftButtonPressed` 判定按下，触摸与手写笔下该值恒为 false，所有手势被丢弃；现按 `e.Pointer.Type` 放行，并收敛为单指针状态机（第二根手指忽略、不维护触摸端悬停游标）
+- **画布手势丢失后卡死**：捕获被抢占或指针被系统回收时 `_dragSeatId` 等状态残留，画布永久停留在拖动态；现重写 `OnPointerCaptureLost` 兜底，`CompleteGesture` 在 `finally` 中无条件 `ResetPointerState()`（清拖动/平移/目标座位、光标回 Arrow），下一次点击必定可响应
 
 ## [2.3.1] — 2026-11-15
 

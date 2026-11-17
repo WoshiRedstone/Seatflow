@@ -593,6 +593,9 @@ public sealed class SeatingCanvas : Control
     private Point _dragBoardPosition;
     private Vector _dragGrabOffset;
     private Vector _panLastPosition;
+    /// <summary>当前手势的归属指针（触摸/鼠标/手写笔）；非 null 时忽略其它指针的按下。</summary>
+    private IPointer? _activePointer;
+    private bool _isPointerPressed;
     private string? _externalDropTargetId;
     private bool _isHoveringSeat;
     private bool _autoFitPending = true;
@@ -635,10 +638,28 @@ public sealed class SeatingCanvas : Control
 
     protected override void OnPointerPressed(PointerPressedEventArgs e)
     {
+        var props = e.GetCurrentPoint(this).Properties;
+
+        // 触摸/手写笔没有「左键」概念（IsLeftButtonPressed 恒为 false），
+        // 必须按指针类型放行，否则点座位/拖座位/平移在触屏上全部失效。
+        var isTouch = e.Pointer.Type is PointerType.Touch or PointerType.Pen;
+        if (!isTouch && !props.IsLeftButtonPressed) return;
+
+        // 忽略已经在处理的第二根手指，避免双指时状态机错乱
+        if (_activePointer is not null && !ReferenceEquals(_activePointer, e.Pointer))
+            return;
+
+        // 长按（Gestures.Holding）需要基类继续处理事件，这里不能再标记 Handled
         base.OnPointerPressed(e);
-        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed) return;
+
+        // 上一轮手势没收到 Released（例如指针被系统吞掉）：这里清掉残留状态，
+        // 否则画布会永久停在「拖动中」，下一次点击也不生效（触摸假死的表现）。
+        if (_activePointer is not null)
+            ResetPointerState();
 
         BeginGesture();
+        _activePointer = e.Pointer;
+        _isPointerPressed = true;
 
         Focus();
         _pointerPosition = e.GetPosition(this);
@@ -655,22 +676,26 @@ public sealed class SeatingCanvas : Control
             if (!IsSeatPicking)
                 SelectedSeatId = seat.Id;
             e.Pointer.Capture(this);
-            e.Handled = true;
             return;
         }
 
-        // 空白处：平移
+        // 空白处：单指/鼠标平移；拾取模式下空白处保留点击（由外层关闭）
         _isPanning = true;
         _panLastPosition = new Vector(_pointerPosition.X, _pointerPosition.Y);
-        Cursor = new Cursor(StandardCursorType.SizeAll);
+        // 触摸端没有鼠标指针，改游标只是白做，还可能残留成拖动形视觉
+        if (!isTouch)
+            Cursor = new Cursor(StandardCursorType.SizeAll);
         e.Pointer.Capture(this);
-        e.Handled = true;
     }
 
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
         _pointerPosition = e.GetPosition(this);
+
+        // 触摸/手写笔不维护悬停游标（没有悬停态），仅记录位置
+        if (e.Pointer.Type is PointerType.Touch or PointerType.Pen && !_isPanning && _dragSeatId is null)
+            return;
 
         if (_isPanning)
         {
@@ -701,7 +726,8 @@ public sealed class SeatingCanvas : Control
                 return;
             }
             _isDragging = true;
-            Cursor = new Cursor(StandardCursorType.DragMove);
+            if (e.Pointer.Type is not (PointerType.Touch or PointerType.Pen))
+                Cursor = new Cursor(StandardCursorType.DragMove);
         }
 
         if (_isDragging)
@@ -719,51 +745,117 @@ public sealed class SeatingCanvas : Control
     {
         base.OnPointerReleased(e);
 
-        if (_isPanning)
+        // 先记录「已抬起」再分派事件：CompleteGesture 的 finally 会复位状态，
+        // 而正常抬起时 Avalonia 也是先 Capture(null) 再派发 Released，
+        // OnPointerCaptureLost 靠这个标志区分「正常抬起」与「真正被打断」。
+        if (ReferenceEquals(_activePointer, e.Pointer))
+            _isPointerPressed = false;
+
+        if (!CompleteGesture(e.Pointer, e.GetPosition(this), isCancel: false))
+            return;
+        e.Pointer.Capture(null);
+        EndGestureSoon();
+    }
+
+    /// <summary>
+    /// 指针捕获丢失（其它控件抢走捕获、窗口失焦、系统手势接管等）。
+    /// 必须清空拖拽/平移状态，否则 _dragSeatId 残留会让画布一直处于「拖动中」，
+    /// 看起来就像界面假死（这是触摸拖动后卡住的根因之一）。
+    /// </summary>
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        if (_activePointer is null) return;
+
+        // 只丢了一半：多指/触控板场景下另一根指针抢了捕获，但这一轮手势本身还在，
+        // 此时若取消整轮手势，单指点击（按下→抬起之间可能短暂丢捕获）就会丢掉点击。
+        if (!ReferenceEquals(_activePointer, e.Pointer)) return;
+
+        // 正常「抬起」也会先释放捕获再收到 Released：此时指针已不再按下，
+        // 说明手势已结束，直接复位即可，绝不能取消（否则点击/拖放都收不到）。
+        if (!IsPointerDown(e.Pointer))
         {
-            _isPanning = false;
-            Cursor = new Cursor(StandardCursorType.Arrow);
-            e.Pointer.Capture(null);
+            ResetPointerState();
             EndGestureSoon();
             return;
         }
 
-        if (_dragSeatId is { } seatId)
-        {
-            var seat = FindSeat(seatId);
-            var pointer = e.GetPosition(this);
-
-            if (_isDragging && seat is not null)
-            {
-                var target = HitTestSeat(pointer);
-                var targetId = target is not null
-                    && !string.Equals(target.Id, seatId, StringComparison.Ordinal)
-                    && !target.IsDisabled
-                        ? target.Id
-                        : null;
-
-                SeatDropped?.Invoke(this, new SeatDropEventArgs(seatId, targetId, seat.StudentId, pointer));
-            }
-            else
-            {
-                // 拾取模式下超过阈值的拖动视为误触，不切换禁用状态
-                var moved = Math.Abs(pointer.X - _pressPosition.X) > DragThreshold
-                    || Math.Abs(pointer.Y - _pressPosition.Y) > DragThreshold;
-                if (!IsSeatPicking || !moved)
-                    SeatClicked?.Invoke(this, new SeatEventArgs(seatId, seat));
-            }
-
-            _dragSeatId = null;
-            _dragTargetId = null;
-            _isDragging = false;
-            _dragBoardPosition = default;
-            _dragGrabOffset = default;
-            Cursor = new Cursor(StandardCursorType.Arrow);
-            InvalidateVisual();
-        }
-
-        e.Pointer.Capture(null);
+        // 指针仍按下却丢了捕获 = 真正的打断，取消这一轮手势并复位状态。
+        CompleteGesture(e.Pointer, _pointerPosition, isCancel: true);
         EndGestureSoon();
+    }
+
+    /// <summary>
+    /// 该指针当前是否仍处于按下状态（鼠标按左键 / 触摸或手写笔接触屏幕）。
+    /// Avalonia 12 没有 GetPointerPoint(IPointer) 这类查询 API，
+    /// 因此由按下/抬起/取消三条路径自行维护 <see cref="_isPointerPressed"/>。
+    /// </summary>
+    private bool IsPointerDown(IPointer pointer)
+        => ReferenceEquals(_activePointer, pointer) && _isPointerPressed;
+
+    /// <summary>
+    /// 结束一次手势：按当前状态分派「放下座位 / 点击座位」，然后无条件清空全部指针状态。
+    /// <paramref name="isCancel"/> 为 true 时只清理不派发事件。
+    /// </summary>
+    /// <returns>是否需要调用方继续处理（例如释放指针捕获）。</returns>
+    private bool CompleteGesture(IPointer pointer, Point position, bool isCancel)
+    {
+        if (!ReferenceEquals(_activePointer, pointer))
+            return false;
+
+        try
+        {
+            if (isCancel)
+                return true;
+
+            if (_isPanning)
+                return true;
+
+            if (_dragSeatId is { } seatId)
+            {
+                var seat = FindSeat(seatId);
+
+                if (_isDragging && seat is not null)
+                {
+                    var target = HitTestSeat(position);
+                    var targetId = target is not null
+                        && !string.Equals(target.Id, seatId, StringComparison.Ordinal)
+                        && !target.IsDisabled
+                            ? target.Id
+                            : null;
+
+                    SeatDropped?.Invoke(this, new SeatDropEventArgs(seatId, targetId, seat.StudentId, position));
+                }
+                else
+                {
+                    // 拾取模式下超过阈值的拖动视为误触，不切换禁用状态
+                    var moved = Math.Abs(position.X - _pressPosition.X) > DragThreshold
+                        || Math.Abs(position.Y - _pressPosition.Y) > DragThreshold;
+                    if (!IsSeatPicking || !moved)
+                        SeatClicked?.Invoke(this, new SeatEventArgs(seatId, seat));
+                }
+            }
+
+            return true;
+        }
+        finally
+        {
+            ResetPointerState();
+        }
+    }
+
+    /// <summary>无条件清空拖拽/平移/指针状态（幂等，可安全重复调用）。</summary>
+    private void ResetPointerState()
+    {
+        _dragSeatId = null;
+        _dragTargetId = null;
+        _isDragging = false;
+        _isPanning = false;
+        _dragBoardPosition = default;
+        _dragGrabOffset = default;
+        _activePointer = null;
+        _isPointerPressed = false;
+        Cursor = new Cursor(StandardCursorType.Arrow);
+        InvalidateVisual();
     }
 
     protected override void OnPointerWheelChanged(PointerWheelEventArgs e)

@@ -40,8 +40,8 @@ public partial class StudentPickerViewModel : ViewModelBase
     /// </summary>
     public void LoadStudents(IEnumerable<SeatFlow.Core.Models.Student> students)
     {
-        // 下拉按姓名自然序展示，避免仓储按 Id 的随机顺序
-        _allStudents = [.. Helpers.StudentSorter.Sort(students)
+        // 保持名单导入顺序（不做任何排序），与人员管理表格、未分配列表一致
+        _allStudents = [.. students
             .Select(s => new StudentPickerItem { Id = s.Id, Name = s.Name })];
         RefreshFilteredStudents();
     }

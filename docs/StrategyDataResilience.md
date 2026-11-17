@@ -12,13 +12,13 @@ SeatFlow 的策略数据分为三层存储，各有不同的生命周期：
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │  Type A: StrategyConfig（策略全局配置）                           │
-│  路径: {AppData}/StrategyConfig/{strategyId}.config.json         │
+│  路径: {数据目录}/StrategyConfig/{strategyId}.config.json         │
 │  内容: Priority, IsEnabled, Parameters (如 HistoryWindowSize)    │
 │  影响: ALL strategies                                            │
 │  加载时机: GetStrategiesAsync() 仅用于展示；❌ 启动时不注入实例     │
 ├─────────────────────────────────────────────────────────────────┤
 │  Type B: StrategyDatasetConfig（按数据集+会场的代码块配置）        │
-│  路径: {AppData}/StrategyConfig/{strategyId}/{dsHalf}-{vHalf}.json│
+│  路径: {数据目录}/StrategyConfig/{strategyId}/{dsHalf}-{vHalf}.json│
 │  内容: 配置行 (StudentId, SeatRow/Column, Values[...])           │
 │  影响: FixedSeat, DeskMate, GenderRestrictedSeat                │
 │  加载时机: GenerateSeatingAsync → ApplyCodeBlockConfigsAsync     │

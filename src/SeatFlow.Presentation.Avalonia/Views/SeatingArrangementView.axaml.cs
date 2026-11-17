@@ -152,7 +152,7 @@ public partial class SeatingArrangementView : UserControl
         return new Rect(tl, TrashZone.Bounds.Size).Contains(p);
     }
 
-    // ── 未分配列表拖动（系统 DnD → 画布命中） ──
+    // ── 未分配列表拖动（鼠标走系统 DnD；触摸/手写笔走「点选 + 点座位」或长按） ──
 
     private async void UnassignedStudent_PointerPressed(object? sender, PointerPressedEventArgs e)
     {
@@ -160,12 +160,34 @@ public partial class SeatingArrangementView : UserControl
             || border.DataContext is not Core.Models.Student student)
             return;
 
+        // 触摸/手写笔没有「左键」概念：若在此 await DoDragDropAsync，
+        // 触摸指针仍被列表捕获、DragOver/Drop 不会触发、await 永不返回 → 界面假死。
+        // 因此触摸只做选中（点选后点座位即可放置），拖拽交给长按进入。
+        if (e.Pointer.Type is PointerType.Touch or PointerType.Pen)
+        {
+            if (DataContext is SeatingArrangementViewModel touchVm)
+                touchVm.SelectedUnassignedStudent = student;
+            return;
+        }
+
+        if (!e.GetCurrentPoint(border).Properties.IsLeftButtonPressed)
+            return;
+
         var data = new DataTransfer();
         var studentItem = new DataTransferItem();
         studentItem.Set(DragFormats.StudentDrag, student.Id);
         data.Add(studentItem);
 
-        var result = await DragDrop.DoDragDropAsync(e, data, DragDropEffects.Move);
+        DragDropEffects result;
+        try
+        {
+            result = await DragDrop.DoDragDropAsync(e, data, DragDropEffects.Move);
+        }
+        catch (Exception)
+        {
+            // 捕获被抢占等异常不应让列表停在拖拽状态
+            result = DragDropEffects.None;
+        }
 
         // 如果没有发生拖放，手动设置选中项（因为 DoDragDropAsync 阻止了 ListBox 的默认选择行为）
         if (result == DragDropEffects.None
@@ -173,6 +195,25 @@ public partial class SeatingArrangementView : UserControl
         {
             vm.SelectedUnassignedStudent = student;
         }
+    }
+
+    /// <summary>
+    /// 画布长按（触摸拖起的替代路径）：把当前选中的未分配学生放入长按命中的座位。
+    /// 触摸设备上系统 DnD 不可靠，长按是最稳的「拖过去」手势。
+    /// </summary>
+    private async void SeatCanvas_Holding(object? sender, HoldingRoutedEventArgs e)
+    {
+        if (e.HoldingState != HoldingState.Started) return;
+        if (DataContext is not SeatingArrangementViewModel vm) return;
+
+        var student = vm.SelectedUnassignedStudent;
+        if (student is null) return;
+
+        var seat = SeatCanvas.HitTestSeat(e.Position);
+        if (seat is null || seat.IsDisabled || seat.IsFixed || seat.IsOccupied) return;
+
+        e.Handled = true;
+        await vm.ExecuteDropAsync(student.Id, null, seat.Id);
     }
 
     // ── 画布作为外部拖放目标 ──

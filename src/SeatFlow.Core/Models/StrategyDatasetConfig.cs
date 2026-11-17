@@ -3,7 +3,7 @@ namespace SeatFlow.Core.Models;
 /// <summary>
 /// 策略按数据集维度的配置，持久化到磁盘。
 /// 每个策略可以有多个 StrategyDatasetConfig（对应不同的人员/会场数据集组合）。
-/// 文件存储于 {AppData}/StrategyConfig/{strategyId}/{filename}.config.json。
+/// 文件存储于 {数据目录}/StrategyConfig/{strategyId}/{filename}.config.json。
 /// </summary>
 public sealed class StrategyDatasetConfig
 {

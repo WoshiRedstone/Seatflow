@@ -579,7 +579,7 @@ public class SeatSetsService : ISeatSetsService
 
             using var doc = JsonDocument.Parse(json);
             var chunk = GetOrCreateChunk(archive, SeatSetsConstants.CategoryAppSettings);
-            // AppSettings.json 直接位于 AppData 根目录
+            // AppSettings.json 直接位于数据目录根目录
             chunk.Files["AppSettings.json"] = doc.RootElement.Clone();
             _logger.LogDebug("已收集 AppSettings");
             return 1;
