@@ -761,6 +761,36 @@ public class SeatingCanvasTests
         window.TouchEnd(fingerB, new Point(center.X + 80, center.Y));
     }
 
+    [AvaloniaFact]
+    public void 重置视图_不破坏缩放的双向绑定()
+    {
+        var canvas = new SeatingCanvas { Snapshot = CreateSnapshot() };
+        var holder = new ZoomHolder();
+        canvas.Bind(
+            SeatingCanvas.ZoomProperty,
+            new Binding(nameof(ZoomHolder.Zoom)) { Source = holder, Mode = BindingMode.TwoWay });
+
+        var window = new Window { Width = 400, Height = 300, Content = canvas };
+        window.Show();
+        window.UpdateLayout();
+
+        holder.Zoom = 1.5;
+        window.UpdateLayout();
+        canvas.Zoom.Should().BeApproximately(1.5, 0.001, "绑定源的缩放必须传到画布");
+
+        // 重置视图内部写入 Zoom：必须回写到绑定源，且不能把绑定拆掉
+        canvas.ResetView(1.0);
+        window.UpdateLayout();
+        holder.Zoom.Should().BeApproximately(1.0, 0.001, "重置缩放应回写到绑定源");
+        canvas.PanOffset.Should().Be(default(Vector), "重置视图必须清空平移");
+
+        holder.Zoom = 2.0;
+        window.UpdateLayout();
+        canvas.Zoom.Should().BeApproximately(2.0, 0.001, "重置后绑定仍须生效");
+
+        window.Close();
+    }
+
     private sealed class ZoomHolder : INotifyPropertyChanged
     {
         private double _zoom = 1.0;
