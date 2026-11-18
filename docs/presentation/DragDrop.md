@@ -203,6 +203,53 @@ protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e) { ..
   或在画布上长按（`Holding`，`HoldingState.Started`）把选中学生放入长按命中的空座位
 - 触摸端不设置鼠标游标（`Cursor`），避免残留拖动形鼠标指针
 
+### 双指缩放（捏合）
+
+触摸设备没有滚轮，`SeatingCanvas` 自己跟踪两根 Touch 指针做捏合缩放（Avalonia 12.1.6 没有内置 pinch
+识别器，`GestureRecognizers` 也没有可用的缩放识别器）。要点：
+
+| 约定 | 原因 |
+|------|------|
+| **每根手指各记各的位置**（`_pinchFirstPosition` / `_pinchSecondPosition`） | 早期实现两根手指共用 `_pointerPosition`，第一根手指一移动就把第二根的位置覆盖成自己的，两指间距瞬间归零 → 缩放掉到 `MinZoom` 再弹回 `MaxZoom`，表现为**会场抽搐、甚至缩到看不见** |
+| `OnPointerMoved` 里双指分支必须写在 `_pointerPosition = e.GetPosition(this)` **之前** | 同上：先写单指位置再算捏合，等于每帧都把另一根手指的位置污染一次 |
+| 缩放用「起点缩放 × 间距比」的**绝对值**映射，不用逐帧增量 | 增量累积撞到上下限后会卡住，手指合拢时回不来 |
+| 间距 < `MinPinchSpan`（12px）时重新取基线，绝不拿接近 0 的比值去缩放 | 两指重合或丢帧时比值失真 |
+| 第三根手指不参与（`_pinchGestureSeen` 期间不再重启基线） | 否则捏合被「重启」，按错的两根手指算间距，画面同样跳 |
+| 抬起任一参与手指 → `CancelPinch()`，剩余手指不再被当成捏合 | 否则剩下的那根手指会带着过期基线继续缩放/平移 |
+
+```csharp
+protected override void OnPointerMoved(PointerEventArgs e)
+{
+    base.OnPointerMoved(e);
+    if (_pinchGestureSeen)          // 先处理捏合
+    {
+        UpdatePinch(e.Pointer, e.GetPosition(this));
+        return;
+    }
+    _pointerPosition = e.GetPosition(this);   // 单指状态才写这个字段
+    ...
+}
+
+private void UpdatePinch(IPointer pointer, Point position)
+{
+    if (ReferenceEquals(pointer, _pinchFirstPointer)) _pinchFirstPosition = position;
+    else if (ReferenceEquals(pointer, _pinchSecondPointer)) _pinchSecondPosition = position;
+    else return;                     // 第三根手指 / 残留移动不参与
+
+    var span = Distance(_pinchFirstPosition, _pinchSecondPosition);
+    if (span < MinPinchSpan || _pinchStartSpan < MinPinchSpan) { 重新取基线; return; }
+
+    var target = Math.Clamp(_pinchStartZoom * (span / _pinchStartSpan), MinZoom, MaxZoom);
+    var delta = target / Zoom;
+    if (Math.Abs(delta - 1) > 1e-4) ZoomAt(delta, Midpoint(...));
+    PanBy(center - _pinchLastCenter);  // 双指整体平移
+}
+```
+
+回归测试在 `tests/SeatFlow.Presentation.Tests/SeatingCanvasTests.cs` 的「双指缩放稳定性」段
+（用 `window.TouchBegin/TouchMove/TouchEnd` 注入真实触摸指针）：间距翻倍时缩放必须精确翻倍、
+交替张开必须单调、锚点下的座位不能漂走、撞上限后合拢必须立刻回落、第三根手指与松开一指都不影响缩放。
+
 ## 常见坑
 
 | 问题 | 现象 | 原因 | 修复 |
@@ -211,6 +258,7 @@ protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e) { ..
 | 触屏假死（列表） | 触摸点一下未分配学生后整页无响应 | 触摸端 `DoDragDropAsync` 的 `await` 永不返回 | 触摸不走系统 DnD，改点选 + 长按放置 |
 | 触屏假死（画布） | 座位拖到一半松手后画布不再响应点击 | 捕获丢失未清 `_dragSeatId`，画布永久处于拖动态 | 重写 `OnPointerCaptureLost` + `ResetPointerState()` |
 | 触屏点座位没反应 | 点击/拖动/平移全部失效 | 用 `IsLeftButtonPressed` 判定 | 按 `e.Pointer.Type` 放行触摸与手写笔 |
+| 双指缩放抽搐/会场消失 | 捏合时画面来回跳，最后缩到看不见 | 两根手指共用 `_pointerPosition`，第一根移动已把第二根位置覆盖 → 间距算成 0 | 两指各记各的位置，捏合分支放在写 `_pointerPosition` 之前，缩放走绝对值映射 |
 | 禁止光标 | 鼠标显示禁止符号 | 目标缺少 `AllowDrop="True"`，或 `e.Handled=true` 过早 + `DragEffects` 保持 `None` | 加 `AllowDrop`，`e.Handled` 移到验证后 |
 | 拖不到垃圾桶 | 拖到垃圾桶上无反应 | 垃圾桶缺少 `AllowDrop="True"` | 加 `AllowDrop` |
 | 拖动时画布乱移 | 座位拖动时画布同时平移 | 平移与座位拖放未隔离（行为时代 `CanvasZoomPan` 误触发） | M5 起由 `SeatingCanvas` 内部手势状态机隔离（历史方案：NaN 哨兵 + `OnPointerMoved` 检查） |

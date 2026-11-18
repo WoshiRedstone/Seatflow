@@ -650,14 +650,19 @@ public sealed class SeatingCanvas : Control
     /// <summary>第一根手指：双指缩放的锚点参照之一。</summary>
     private IPointer? _pinchFirstPointer;
     private Point _pinchFirstPosition;
+    /// <summary>第二根手指：必须与 <see cref="SeatingCanvas._pinchFirstPointer"/> 分开记位置，
+    /// 否则任一根手指移动都会互相覆盖，两指间距瞬间归零 → 画布缩放跳变（抽搐/消失的根因）。</summary>
+    private IPointer? _pinchSecondPointer;
+    private Point _pinchSecondPosition;
     /// <summary>双指缩放中：真 = 正在按两根手指的间距缩放。</summary>
     private bool _pinchActive;
     /// <summary>双指手势已识别（期间忽略第三根手指与单指拖拽/点击）。</summary>
     private bool _pinchGestureSeen;
     /// <summary>起点时两指间距（像素；小于 <see cref="MinPinchSpan"/> 时不做比值缩放）。</summary>
     private double _pinchStartSpan;
-    /// <summary>已施加的缩放倍数：每帧只应用增量，避免累积误差与中心漂移。</summary>
-    private double _pinchAppliedScale = 1;
+    /// <summary>起点时的缩放值：目标缩放 = 起点缩放 × (当前间距 / 起点间距)，
+    /// 每次都由绝对值算出，不累积误差，也不会因为夹到上下限而卡住。</summary>
+    private double _pinchStartZoom = 1;
     /// <summary>双指手势期间的合并后中心点（屏幕坐标）。</summary>
     private Point _pinchLastCenter;
 
@@ -782,15 +787,18 @@ public sealed class SeatingCanvas : Control
     protected override void OnPointerMoved(PointerEventArgs e)
     {
         base.OnPointerMoved(e);
-        _pointerPosition = e.GetPosition(this);
         RawPointerPositionForTest = e.GetPosition(null);
 
-        // 双指缩放：任何一根手指移动都要重新计算缩放与中心平移
+        // 双指缩放：任何一根手指移动都要重新计算缩放与中心平移。
+        // 必须放在写 _pointerPosition 之前——单指状态用的 _pointerPosition 一旦被第一根
+        // 手指覆盖，两指间距就会算成 0，缩放会瞬间掉到最小再弹回（抖动/会场消失）。
         if (_pinchGestureSeen)
         {
-            UpdatePinch(e.GetPosition(this));
+            UpdatePinch(e.Pointer, e.GetPosition(this));
             return;
         }
+
+        _pointerPosition = e.GetPosition(this);
 
         // 触摸/手写笔不维护悬停游标（没有悬停态），仅记录位置
         if (e.Pointer.Type is PointerType.Touch or PointerType.Pen && !_isPanning && _dragSeatId is null)
@@ -989,9 +997,11 @@ public sealed class SeatingCanvas : Control
         _activePointer = null;
         _isPointerPressed = false;
         _pinchFirstPointer = null;
+        _pinchSecondPointer = null;
+        _pinchSecondPosition = default;
         _pinchActive = false;
         _pinchGestureSeen = false;
-        _pinchAppliedScale = 1;
+        _pinchStartZoom = 1;
         Cursor = new Cursor(StandardCursorType.Arrow);
         InvalidateVisual();
     }
@@ -1005,6 +1015,10 @@ public sealed class SeatingCanvas : Control
     private bool TryStartPinch(PointerPressedEventArgs e)
     {
         if (_activePointer is null) return false;
+
+        // 已经在双指手势中：第三根手指既不能重新取基线，也不能参与计算，
+        // 否则捏合会被「重启」，两指间距按错的两根手指算，画面同样会跳。
+        if (_pinchGestureSeen) return false;
 
         // 单指阶段已经拖起座位（超过阈值）时保持拖拽语义，避免拖动中被打断
         if (_isDragging) return false;
@@ -1023,8 +1037,10 @@ public sealed class SeatingCanvas : Control
         _isPointerPressed = true;
 
         var second = e.GetPosition(this);
+        _pinchSecondPointer = e.Pointer;
+        _pinchSecondPosition = second;
         _pinchStartSpan = Distance(_pinchFirstPosition, second);
-        _pinchAppliedScale = 1;
+        _pinchStartZoom = Zoom;
         _pinchLastCenter = Midpoint(_pinchFirstPosition, second);
         _pinchActive = _pinchStartSpan >= MinPinchSpan;
 
@@ -1035,16 +1051,27 @@ public sealed class SeatingCanvas : Control
 
     /// <summary>
     /// 双指移动：按两指间距的比例缩放（以两指中心为锚点），中心位移同时平移板面。
+    /// 每根手指各记各的位置：任意一根移动都不能改写另一根的位置，
+    /// 否则间距会瞬间归零，缩放随之跳变（表现为会场抽搐、甚至缩到看不见）。
     /// </summary>
-    private void UpdatePinch(Point position)
+    private void UpdatePinch(IPointer pointer, Point position)
     {
-        if (ReferenceEquals(_activePointer, _pinchFirstPointer))
+        if (ReferenceEquals(pointer, _pinchFirstPointer))
+        {
             _pinchFirstPosition = position;
+        }
+        else if (ReferenceEquals(pointer, _pinchSecondPointer))
+        {
+            _pinchSecondPosition = position;
+        }
         else
-            _pointerPosition = position;
+        {
+            // 第三根手指或已结束指针的残留移动：不参与双指计算
+            return;
+        }
 
-        var span = Distance(_pinchFirstPosition, _pointerPosition);
-        var center = Midpoint(_pinchFirstPosition, _pointerPosition);
+        var span = Distance(_pinchFirstPosition, _pinchSecondPosition);
+        var center = Midpoint(_pinchFirstPosition, _pinchSecondPosition);
 
         if (!_pinchActive)
         {
@@ -1057,20 +1084,29 @@ public sealed class SeatingCanvas : Control
             }
 
             _pinchStartSpan = span;
-            _pinchAppliedScale = 1;
+            _pinchStartZoom = Zoom;
             _pinchLastCenter = center;
             _pinchActive = true;
             InvalidateVisual();
             return;
         }
 
-        // 每帧只应用「相对上次」的增量倍数，手指间距比即缩放比
-        var ratio = span / _pinchStartSpan;
-        var delta = ratio / Math.Max(_pinchAppliedScale, 1e-6);
+        // 间距塌缩（两指重合/事件丢帧）：重新取基线，绝不拿接近 0 的比值去缩放
+        if (span < MinPinchSpan || _pinchStartSpan < MinPinchSpan)
+        {
+            _pinchStartSpan = Math.Max(span, MinPinchSpan);
+            _pinchStartZoom = Zoom;
+            _pinchLastCenter = center;
+            return;
+        }
+
+        // 目标缩放由「起点缩放 × 间距比」算出，属于绝对值而不是逐帧增量：
+        // 缩放上下限把目标夹住后，手指合拢时能立刻正确回落，不会卡在上限。
+        var targetZoom = Math.Clamp(_pinchStartZoom * (span / _pinchStartSpan), MinZoom, MaxZoom);
+        var delta = targetZoom / Zoom;
         if (Math.Abs(delta - 1) > 1e-4)
             ZoomAt(delta, center);
 
-        _pinchAppliedScale = ratio;
         PanBy(center - _pinchLastCenter);
         _pinchLastCenter = center;
     }
@@ -1081,7 +1117,6 @@ public sealed class SeatingCanvas : Control
         _pinchFirstPointer = null;
         _pinchActive = false;
         _pinchGestureSeen = false;
-        _pinchAppliedScale = 1;
         ResetPointerState();
     }
 

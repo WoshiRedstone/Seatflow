@@ -480,4 +480,143 @@ public class SeatingCanvasTests
 
         clicks.Should().Be(1, "双指手势结束后单指点击必须恢复");
     }
+
+    // ── 双指缩放稳定性（回归：缩放时会场抽搐、甚至缩到看不见） ──
+    // 根因：两指共用了一个位置字段，任一根手指移动都会改写另一根的位置，
+    // 两指间距瞬间归零 → 缩放掉到最小值再弹回。
+
+    [AvaloniaFact]
+    public void 双指移动第一根手指_缩放按两指间距精确变化()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+        var center = ToScreen(canvas, new Point(100, 60));
+
+        var fingerA = window.TouchBegin(new Point(center.X - 20, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 20, center.Y));
+
+        // 只动第一根手指：两指间距 40 → 80，缩放应精确翻倍
+        window.TouchMove(fingerA, new Point(center.X - 60, center.Y));
+
+        canvas.Zoom.Should().BeApproximately(2.0, 0.05, "间距翻倍时缩放应翻倍，不能塌到最小缩放");
+
+        window.TouchEnd(fingerA, new Point(center.X - 60, center.Y));
+        window.TouchEnd(fingerB, new Point(center.X + 20, center.Y));
+    }
+
+    [AvaloniaFact]
+    public void 双指交替张开_缩放单调增大不抖动()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+        var center = ToScreen(canvas, new Point(100, 60));
+
+        var fingerA = window.TouchBegin(new Point(center.X - 20, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 20, center.Y));
+
+        var zooms = new List<double> { canvas.Zoom };
+        for (var step = 1; step <= 3; step++)
+        {
+            window.TouchMove(fingerA, new Point(center.X - 20 - (step * 20), center.Y));
+            zooms.Add(canvas.Zoom);
+            window.TouchMove(fingerB, new Point(center.X + 20 + (step * 20), center.Y));
+            zooms.Add(canvas.Zoom);
+        }
+
+        window.TouchEnd(fingerA, new Point(center.X - 80, center.Y));
+        window.TouchEnd(fingerB, new Point(center.X + 80, center.Y));
+
+        for (var i = 1; i < zooms.Count; i++)
+        {
+            zooms[i].Should().BeGreaterThanOrEqualTo(zooms[i - 1] - 0.001, "张开过程中缩放不应回退（回退就是画面抽搐）");
+            zooms[i].Should().BeGreaterThan(SeatingCanvas.MinZoom + 0.01, "任何一帧都不应缩到最小、把会场甩出视口");
+        }
+
+        canvas.Zoom.Should().BeGreaterThan(1.5);
+    }
+
+    [AvaloniaFact]
+    public void 双指对称张开_锚点下方的座位保持不动()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+
+        // 两指中心对准 s1 座位中心
+        var center = ToScreen(canvas, new Point(25, 15));
+        canvas.HitTestSeat(center)!.Id.Should().Be("s1");
+
+        var fingerA = window.TouchBegin(new Point(center.X - 30, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 30, center.Y));
+        window.TouchMove(fingerA, new Point(center.X - 60, center.Y));
+        window.TouchMove(fingerB, new Point(center.X + 60, center.Y));
+
+        canvas.HitTestSeat(center).Should().NotBeNull("缩放锚点下方的座位不应漂走");
+        canvas.HitTestSeat(center)!.Id.Should().Be("s1");
+
+        window.TouchEnd(fingerA, new Point(center.X - 60, center.Y));
+        window.TouchEnd(fingerB, new Point(center.X + 60, center.Y));
+    }
+
+    [AvaloniaFact]
+    public void 双指张开超过上限后再合拢_缩放立即回落()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+        var center = ToScreen(canvas, new Point(100, 60));
+
+        var fingerA = window.TouchBegin(new Point(center.X - 20, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 20, center.Y));
+
+        window.TouchMove(fingerA, new Point(center.X - 200, center.Y));
+        window.TouchMove(fingerB, new Point(center.X + 200, center.Y));
+        canvas.Zoom.Should().Be(SeatingCanvas.MaxZoom, "缩放到上限时夹在 3.0");
+
+        window.TouchMove(fingerA, new Point(center.X - 40, center.Y));
+        window.TouchMove(fingerB, new Point(center.X + 40, center.Y));
+        canvas.Zoom.Should().BeLessThan(SeatingCanvas.MaxZoom - 0.3, "合拢后必须立即回落，不能被上限卡住");
+
+        window.TouchEnd(fingerA, new Point(center.X - 40, center.Y));
+        window.TouchEnd(fingerB, new Point(center.X + 40, center.Y));
+    }
+
+    [AvaloniaFact]
+    public void 双指缩放_第三根手指移动不影响缩放()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+        var center = ToScreen(canvas, new Point(100, 60));
+
+        var fingerA = window.TouchBegin(new Point(center.X - 40, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 40, center.Y));
+        window.TouchMove(fingerA, new Point(center.X - 80, center.Y));
+
+        var zoomAfterPinch = canvas.Zoom;
+
+        var fingerC = window.TouchBegin(new Point(center.X + 120, center.Y + 60));
+        window.TouchMove(fingerC, new Point(center.X + 260, center.Y + 160));
+
+        canvas.Zoom.Should().Be(zoomAfterPinch, "第三根手指不参与双指缩放");
+
+        window.TouchEnd(fingerC, new Point(center.X + 260, center.Y + 160));
+        window.TouchEnd(fingerA, new Point(center.X - 80, center.Y));
+        window.TouchEnd(fingerB, new Point(center.X + 40, center.Y));
+    }
+
+    [AvaloniaFact]
+    public void 双指缩放中抬起一根手指_剩余手指移动不再改变缩放()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+        var center = ToScreen(canvas, new Point(100, 60));
+
+        var fingerA = window.TouchBegin(new Point(center.X - 20, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 20, center.Y));
+        window.TouchMove(fingerA, new Point(center.X - 50, center.Y));
+
+        var zoomAfterPinch = canvas.Zoom;
+        var panAfterPinch = canvas.PanOffset;
+
+        // 抬起一根手指：双指手势结束，剩余手指的移动不能再被当成捏合
+        window.TouchEnd(fingerA, new Point(center.X - 50, center.Y));
+        window.TouchMove(fingerB, new Point(center.X + 260, center.Y + 160));
+
+        canvas.Zoom.Should().Be(zoomAfterPinch, "抬起一根手指后缩放必须冻结，否则画面会跳");
+        canvas.PanOffset.Should().Be(panAfterPinch, "抬起一根手指后剩余手指不应再平移板面");
+
+        window.TouchEnd(fingerB, new Point(center.X + 260, center.Y + 160));
+    }
 }

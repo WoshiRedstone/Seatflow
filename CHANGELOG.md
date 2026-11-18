@@ -13,6 +13,7 @@
 - **依赖升级**：Avalonia 12.1.4 → 12.1.6（含 Desktop / Browser / Themes.Fluent / Fonts.Inter / Headless / Headless.XUnit / Skia）、SkiaSharp 与 `SkiaSharp.NativeAssets.Linux` 4.154.0 → 4.156.1、Microsoft.Extensions 10.0.14 → 11.0.0（含 `System.Security.Cryptography.Xml`）、OpenTelemetry 1.20.1 → 1.21.0、Markdig 1.5.1 → 1.6.0、QuestPDF 2026.9.1 → 2026.9.2、Microsoft.NET.Test.Sdk 18.11.0 → 18.12.0、xunit.v3 4.0.2 → 4.0.3（`Presentation.Tests` 继续锁定 3.2.2）；`vpk` / `Velopack` 1.2.161 已是最新稳定版，`avdt` 2.2.3 与 `run-script` 0.6.0 同为最新
 
 ### Fixed
+- **双指缩放抽搐/会场消失**：捏合时两根手指共用同一个位置字段，任意一根手指移动都会把另一根的位置覆盖成自己的坐标，两指间距瞬间算成 0 → 缩放先掉到最小（0.2，座位缩到几像素、标签全部跳过）再弹回最大（3.0），表现为会场来回抽搐甚至「消失」；现每根手指各记各的位置、捏合分支在写单指位置之前处理，缩放改为「起点缩放 × 间距比」的绝对值映射（撞上限后合拢能立刻回落），间距小于 12px 时重新取基线，第三根手指不参与，抬起任一手指即结束手势
 - **触屏拖动待选座学生假死**：未分配学生列表此前在 `PointerPressed` 里直接 `await DragDrop.DoDragDropAsync(...)`，触摸下指针仍被列表捕获导致 `DragOver`/`Drop` 不触发、await 永不返回，列表与整页失去响应；现触摸/手写笔只做点选（再点目标座位即入座），系统拖放仅保留给鼠标，并新增画布长按（`Gestures.Holding`）把已选中的待分配学生直接放到位
 - **触屏点座位/拖座位/平移无响应**：`SeatingCanvas` 用 `IsLeftButtonPressed` 判定按下，触摸与手写笔下该值恒为 false，所有手势被丢弃；现按 `e.Pointer.Type` 放行，并收敛为单指针状态机（第二根手指忽略、不维护触摸端悬停游标）
 - **画布手势丢失后卡死**：捕获被抢占或指针被系统回收时 `_dragSeatId` 等状态残留，画布永久停留在拖动态；现重写 `OnPointerCaptureLost` 兜底，`CompleteGesture` 在 `finally` 中无条件 `ResetPointerState()`（清拖动/平移/目标座位、光标回 Arrow），下一次点击必定可响应
