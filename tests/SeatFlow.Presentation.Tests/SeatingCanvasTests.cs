@@ -1,5 +1,7 @@
+using System.ComponentModel;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Data;
 using Avalonia.Headless;
 using Avalonia.Headless.XUnit;
 using Avalonia.Input;
@@ -618,5 +620,162 @@ public class SeatingCanvasTests
         canvas.PanOffset.Should().Be(panAfterPinch, "抬起一根手指后剩余手指不应再平移板面");
 
         window.TouchEnd(fingerB, new Point(center.X + 260, center.Y + 160));
+    }
+
+    // ── 缩放/平移边界（回归：缩放后会场跑到屏幕外、拖不回来） ──
+
+    [AvaloniaFact]
+    public void 平移超界_板面始终留在视口内()
+    {
+        var (canvas, _) = CreateCanvasWindow(CreateSnapshot());
+
+        canvas.PanOffset = new Vector(100000, 100000);
+
+        var offset = canvas.ContentOffsetForTest;
+        var boardWidth = canvas.Snapshot!.BoardWidth * canvas.Zoom;
+        var boardHeight = canvas.Snapshot.BoardHeight * canvas.Zoom;
+
+        offset.X.Should().BeGreaterThanOrEqualTo(0);
+        offset.Y.Should().BeGreaterThanOrEqualTo(0);
+        (offset.X + boardWidth).Should().BeLessThanOrEqualTo(canvas.Bounds.Width + 0.001,
+            "板面小于视口时整块板面都必须留在视口内");
+        (offset.Y + boardHeight).Should().BeLessThanOrEqualTo(canvas.Bounds.Height + 0.001);
+    }
+
+    [AvaloniaFact]
+    public void 放大后平移超界_板面仍有足够区域可见()
+    {
+        var (canvas, _) = CreateCanvasWindow(CreateSnapshot());
+        canvas.Zoom = 2.5;
+
+        var boardWidth = canvas.Snapshot!.BoardWidth * canvas.Zoom;
+        var boardHeight = canvas.Snapshot.BoardHeight * canvas.Zoom;
+
+        canvas.PanBy(new Vector(100000, 100000));
+        var offset = canvas.ContentOffsetForTest;
+        VisibleWidth(offset.X, boardWidth, canvas.Bounds.Width)
+            .Should().BeGreaterThanOrEqualTo(Math.Min(boardWidth, canvas.Bounds.Width * 0.75) - 0.001,
+                "向右拖到极限时仍要留下足够大的板面区域，用户才能把它拖回来");
+        VisibleHeight(offset.Y, boardHeight, canvas.Bounds.Height)
+            .Should().BeGreaterThanOrEqualTo(Math.Min(boardHeight, canvas.Bounds.Height * 0.75) - 0.001);
+
+        canvas.PanBy(new Vector(-100000, -100000));
+        offset = canvas.ContentOffsetForTest;
+        VisibleWidth(offset.X, boardWidth, canvas.Bounds.Width)
+            .Should().BeGreaterThanOrEqualTo(Math.Min(boardWidth, canvas.Bounds.Width * 0.75) - 0.001);
+        VisibleHeight(offset.Y, boardHeight, canvas.Bounds.Height)
+            .Should().BeGreaterThanOrEqualTo(Math.Min(boardHeight, canvas.Bounds.Height * 0.75) - 0.001);
+    }
+
+    private static double VisibleWidth(double offsetX, double boardWidth, double viewportWidth)
+        => Math.Min(offsetX + boardWidth, viewportWidth) - Math.Max(offsetX, 0);
+
+    private static double VisibleHeight(double offsetY, double boardHeight, double viewportHeight)
+        => Math.Min(offsetY + boardHeight, viewportHeight) - Math.Max(offsetY, 0);
+
+    [AvaloniaFact]
+    public void 缩小到板面放得下_平移量被收敛回可见范围()
+    {
+        var (canvas, _) = CreateCanvasWindow(CreateSnapshot());
+        canvas.Zoom = 3.0;
+        canvas.PanBy(new Vector(-100000, -100000));
+
+        canvas.Zoom = 0.2;
+
+        var offset = canvas.ContentOffsetForTest;
+        offset.X.Should().BeGreaterThanOrEqualTo(0);
+        offset.Y.Should().BeGreaterThanOrEqualTo(0);
+        (offset.X + (canvas.Snapshot!.BoardWidth * 0.2))
+            .Should().BeLessThanOrEqualTo(canvas.Bounds.Width + 0.001);
+        (offset.Y + (canvas.Snapshot.BoardHeight * 0.2))
+            .Should().BeLessThanOrEqualTo(canvas.Bounds.Height + 0.001);
+    }
+
+    [AvaloniaFact]
+    public void 重置缩放_同时清空平移并回到居中()
+    {
+        var (canvas, _) = CreateCanvasWindow(CreateSnapshot());
+        canvas.Zoom = 2.5;
+        canvas.PanBy(new Vector(-100000, -100000));
+        canvas.PanOffset.Should().NotBe(default(Vector));
+
+        canvas.ResetView(1.0);
+
+        canvas.Zoom.Should().Be(1.0);
+        canvas.PanOffset.Should().Be(default(Vector), "重置视图必须同时把平移量归零，否则会场仍可能停在视口外");
+        canvas.ContentOffsetForTest.X.Should().BeApproximately((canvas.Bounds.Width - 200) / 2, 0.001);
+        canvas.ContentOffsetForTest.Y.Should().BeApproximately((canvas.Bounds.Height - 120) / 2, 0.001);
+    }
+
+    [AvaloniaFact]
+    public void 第一根手指已经拖动_第二根手指仍能开始双指缩放()
+    {
+        var (canvas, window) = CreateCanvasWindow(CreateSnapshot());
+
+        var drops = 0;
+        canvas.SeatDropped += (_, _) => drops++;
+
+        // 第一根手指从 s1 上移动超过 4px 阈值，已经进入拖拽
+        var seat = ToScreen(canvas, new Point(25, 15));
+        var fingerA = window.TouchBegin(seat);
+        window.TouchMove(fingerA, new Point(seat.X + 12, seat.Y));
+
+        // 第二根手指落下：必须让捏合接管（不能因为「正在拖拽」而把双指缩放判为无效）
+        var fingerB = window.TouchBegin(new Point(seat.X + 80, seat.Y));
+        window.TouchMove(fingerA, new Point(seat.X - 40, seat.Y));
+        window.TouchMove(fingerB, new Point(seat.X + 140, seat.Y));
+
+        canvas.Zoom.Should().BeGreaterThan(1.1, "双指张开必须放大，不能被单指拖拽状态挡住");
+
+        window.TouchEnd(fingerA, new Point(seat.X - 40, seat.Y));
+        window.TouchEnd(fingerB, new Point(seat.X + 140, seat.Y));
+        drops.Should().Be(0, "被捏合接管的拖拽不应产生落座");
+    }
+
+    [AvaloniaFact]
+    public void 双指缩放_同步到双向绑定的缩放比例()
+    {
+        var canvas = new SeatingCanvas { Snapshot = CreateSnapshot() };
+        var holder = new ZoomHolder();
+        canvas.Bind(
+            SeatingCanvas.ZoomProperty,
+            new Binding(nameof(ZoomHolder.Zoom)) { Source = holder, Mode = BindingMode.TwoWay });
+
+        var window = new Window { Width = 400, Height = 300, Content = canvas };
+        window.Show();
+        window.UpdateLayout();
+
+        holder.Zoom.Should().Be(1.0, "初始缩放应来自绑定源");
+
+        var center = ToScreen(canvas, new Point(100, 60));
+        var fingerA = window.TouchBegin(new Point(center.X - 40, center.Y));
+        var fingerB = window.TouchBegin(new Point(center.X + 40, center.Y));
+        window.TouchMove(fingerA, new Point(center.X - 80, center.Y));
+        window.TouchMove(fingerB, new Point(center.X + 80, center.Y));
+
+        canvas.Zoom.Should().BeGreaterThan(1.2);
+        holder.Zoom.Should().BeApproximately(canvas.Zoom, 0.001,
+            "缩放必须回写到双向绑定源，否则右下角百分比显示会与实际缩放不一致");
+
+        window.TouchEnd(fingerA, new Point(center.X - 80, center.Y));
+        window.TouchEnd(fingerB, new Point(center.X + 80, center.Y));
+    }
+
+    private sealed class ZoomHolder : INotifyPropertyChanged
+    {
+        private double _zoom = 1.0;
+
+        public double Zoom
+        {
+            get => _zoom;
+            set
+            {
+                if (Math.Abs(_zoom - value) < 1e-9) return;
+                _zoom = value;
+                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(Zoom)));
+            }
+        }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
     }
 }

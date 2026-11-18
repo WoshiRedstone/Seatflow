@@ -104,11 +104,11 @@ public partial class SeatingArrangementView : UserControl
         SeatCanvas.ZoomAt(factor, center);
     }
 
-    /// <summary>点击百分比：重置为设置中的默认缩放（关联「座位图默认缩放」）。</summary>
+    /// <summary>点击百分比：重置为设置中的默认缩放，并清掉平移量（回到初始视图）。</summary>
     private void ResetZoom_Click(object? sender, RoutedEventArgs e)
     {
         if (DataContext is SeatingArrangementViewModel vm)
-            SeatCanvas.Zoom = vm.DefaultZoomLevel;
+            SeatCanvas.ResetView(vm.DefaultZoomLevel);
     }
 
     // ── 座位点击 / 键盘激活 ──

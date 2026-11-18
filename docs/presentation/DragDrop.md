@@ -250,6 +250,24 @@ private void UpdatePinch(IPointer pointer, Point position)
 （用 `window.TouchBegin/TouchMove/TouchEnd` 注入真实触摸指针）：间距翻倍时缩放必须精确翻倍、
 交替张开必须单调、锚点下的座位不能漂走、撞上限后合拢必须立刻回落、第三根手指与松开一指都不影响缩放。
 
+### 平移边界与视图重置
+
+捏合缩放会把板面放大到超出视口。如果平移量不设上限，用户可以把整块板面推出视口，之后既看不到会场、
+也没有「回到查看范围」的入口。`SeatingCanvas` 在属性层统一收敛（外部代码、手势、按钮都绕不过去）：
+
+| 约定 | 原因 |
+|------|------|
+| `PanOffset` 的 setter 与 `Zoom` 的 setter 都经过 `ClampPan` | 任何写入路径（拖拽、滚轮、捏合、按钮、绑定）都不能把板面推丢 |
+| 每个方向至少保留 `MinVisibleViewportFraction`（0.75）的视口可见；板面比这个阈值小时整块保留 | 既保证「拖不丢」，又不会把捏合锚点强行拉回中心（否则手指下方的座位会漂走） |
+| 边界是「板面尺寸 × 缩放」的连续函数 | 早期按「居中/贴边」两分支会让缩放跨过临界点时偏移量突变，画面跳一下 |
+| `ResetView(zoom)` 同时把 `PanOffset` 归零 | 只重置缩放会把旧平移量留下，缩小后会场仍可能停在视口外（点击右下角百分比即为重置） |
+| `ArrangeOverride` 中再次 `ClampPan` | 窗口尺寸变化后旧的平移量可能已越界 |
+| 快照尺寸变化（换会场）→ 平移归零；同尺寸快照替换（每次落座重建）→ 收敛到合法范围 | 换会场应回到初始视图，落座重建不应让视图跳动 |
+| `TryStartPinch` 优先于单指拖拽：第二根手指落下即取消拖拽/平移 | 触摸抖动 4px 就会进入拖拽状态，旧逻辑会拒绝捏合，表现为缩放间歇失效、比例不对 |
+
+回归测试同在 `SeatingCanvasTests.cs` 的「缩放/平移边界」段：平移超界后板面仍留在视口内、放大后拖到极限
+仍保留 75% 视口、缩小后平移量被收敛、重置缩放同时清空平移、第一根手指已拖动时第二根手指仍能捏合。
+
 ## 常见坑
 
 | 问题 | 现象 | 原因 | 修复 |
@@ -259,6 +277,8 @@ private void UpdatePinch(IPointer pointer, Point position)
 | 触屏假死（画布） | 座位拖到一半松手后画布不再响应点击 | 捕获丢失未清 `_dragSeatId`，画布永久处于拖动态 | 重写 `OnPointerCaptureLost` + `ResetPointerState()` |
 | 触屏点座位没反应 | 点击/拖动/平移全部失效 | 用 `IsLeftButtonPressed` 判定 | 按 `e.Pointer.Type` 放行触摸与手写笔 |
 | 双指缩放抽搐/会场消失 | 捏合时画面来回跳，最后缩到看不见 | 两根手指共用 `_pointerPosition`，第一根移动已把第二根位置覆盖 → 间距算成 0 | 两指各记各的位置，捏合分支放在写 `_pointerPosition` 之前，缩放走绝对值映射 |
+| 缩放后会场找不回 | 捏合/拖动后整块板面跑到视口外，怎么拖都不回来 | `PanOffset` 无边界约束，缩放后旧平移量仍然生效 | `Zoom`/`PanOffset` setter 统一 `ClampPan`，每方向至少保留 75% 视口；重置缩放同时清空平移 |
+| 捏合时好时坏 | 双指缩放偶尔完全不动，像没识别到 | 第一根手指抖动 >4px 先进入拖拽，`TryStartPinch` 因「正在拖动」拒绝捏合 | 捏合优先接管并取消单指拖拽/平移；非当前手势指针的移动不写单指状态 |
 | 禁止光标 | 鼠标显示禁止符号 | 目标缺少 `AllowDrop="True"`，或 `e.Handled=true` 过早 + `DragEffects` 保持 `None` | 加 `AllowDrop`，`e.Handled` 移到验证后 |
 | 拖不到垃圾桶 | 拖到垃圾桶上无反应 | 垃圾桶缺少 `AllowDrop="True"` | 加 `AllowDrop` |
 | 拖动时画布乱移 | 座位拖动时画布同时平移 | 平移与座位拖放未隔离（行为时代 `CanvasZoomPan` 误触发） | M5 起由 `SeatingCanvas` 内部手势状态机隔离（历史方案：NaN 哨兵 + `OnPointerMoved` 检查） |

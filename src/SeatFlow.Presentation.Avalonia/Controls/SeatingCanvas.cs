@@ -51,6 +51,9 @@ public sealed class SeatingCanvas : Control
     /// <summary>拖拽判定阈值（像素）。</summary>
     private const double DragThreshold = 4;
 
+    /// <summary>平移收敛时每个方向至少保留的可见视口比例（板面较小时整块保留）。</summary>
+    private const double MinVisibleViewportFraction = 0.75;
+
     /// <summary>座位标签最小可读屏幕宽度（低于则跳过绘制，保护大班级性能）。</summary>
     private const double LabelMinScreenWidth = 18;
 
@@ -120,14 +123,21 @@ public sealed class SeatingCanvas : Control
     public double Zoom
     {
         get => GetValue(ZoomProperty);
-        set => SetValue(ZoomProperty, Math.Clamp(value, MinZoom, MaxZoom));
+        set
+        {
+            var zoom = Math.Clamp(value, MinZoom, MaxZoom);
+            SetValue(ZoomProperty, zoom);
+            // 缩放变化会改变板面在视口中的基准位置：同步收敛平移量，
+            // 否则缩小后旧的平移量会把会场整体推到视口外（看起来「消失」）。
+            SetValue(PanOffsetProperty, ClampPan(PanOffset, zoom, Bounds.Size));
+        }
     }
 
     /// <summary>平移偏移（双向绑定；0 表示居中/贴边）。</summary>
     public Vector PanOffset
     {
         get => GetValue(PanOffsetProperty);
-        set => SetValue(PanOffsetProperty, value);
+        set => SetValue(PanOffsetProperty, ClampPan(value, Zoom, Bounds.Size));
     }
 
     /// <summary>板面尺寸变化时是否自动适配视口（预览场景开启；工作台关闭以使用默认缩放）。</summary>
@@ -251,7 +261,19 @@ public sealed class SeatingCanvas : Control
         InvalidateVisual();
     }
 
-    /// <summary>按屏幕像素平移。</summary>
+    /// <summary>
+    /// 重置视图到指定缩放，并把平移量归零（点击缩放百分比时的行为）。
+    /// 只改缩放不改平移会把之前的平移量保留下来，缩小后会场直接跑出视口。
+    /// </summary>
+    public void ResetView(double zoom)
+    {
+        var clamped = Math.Clamp(zoom, MinZoom, MaxZoom);
+        SetValue(ZoomProperty, clamped);
+        SetValue(PanOffsetProperty, default);
+        InvalidateVisual();
+    }
+
+    /// <summary>按屏幕像素平移（自动限制在可见范围内，板面不会被拖丢）。</summary>
     public void PanBy(Vector delta)
     {
         PanOffset += delta;
@@ -297,9 +319,29 @@ public sealed class SeatingCanvas : Control
                 || Math.Abs(oldSnapshot.BoardWidth - newSnapshot.BoardWidth) > 0.5
                 || Math.Abs(oldSnapshot.BoardHeight - newSnapshot.BoardHeight) > 0.5)
             {
+                // 换了会场/板面大小：旧平移量没有意义，直接回到默认位置，
+                // 否则切换会场后可能看不到新会场（旧的平移把板面推到了视口外）。
                 _autoFitPending = true;
+                SetValue(PanOffsetProperty, default);
+            }
+            else
+            {
+                // 同一板面的快照替换（每次落座都会重建）：只收敛越界的平移量
+                SetValue(PanOffsetProperty, ClampPan(PanOffset, Zoom, Bounds.Size));
             }
         }
+    }
+
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        var arranged = base.ArrangeOverride(finalSize);
+
+        // 窗口尺寸变化后，旧的平移量可能超出新视口能接受的范围
+        var clamped = ClampPan(PanOffset, Zoom, finalSize);
+        if (clamped != PanOffset)
+            SetCurrentValue(PanOffsetProperty, clamped);
+
+        return arranged;
     }
 
     public override void Render(DrawingContext context)
@@ -613,6 +655,45 @@ public sealed class SeatingCanvas : Control
         return new Point(x, y);
     }
 
+    /// <summary>
+    /// 收敛平移量，保证板面不会整块被拖出视口：
+    /// 每个方向至少保留 <see cref="MinVisibleViewportFraction"/> 的视口（板面较小时则整块保留）可见。
+    /// 边界是板面尺寸的连续函数，缩放过程中不会因跨过某个阈值而突然跳动；
+    /// 同时不会把捏合锚点强行拉回中心，手指下方的座位仍能保持在原位。
+    /// 没有这一步，平移量可以无限增大，会场会被拖到视口外且难以找回。
+    /// </summary>
+    private Vector ClampPan(Vector pan, double zoom, Size viewport)
+    {
+        var snapshot = Snapshot;
+        if (snapshot is null || snapshot.BoardWidth <= 0 || snapshot.BoardHeight <= 0)
+            return pan;
+        if (viewport.Width <= 0 || viewport.Height <= 0)
+            return pan;
+
+        var baseOffset = GetContentOffsetFor(viewport, zoom, snapshot);
+        var contentWidth = snapshot.BoardWidth * zoom;
+        var contentHeight = snapshot.BoardHeight * zoom;
+
+        var left = baseOffset.X + pan.X;
+        var top = baseOffset.Y + pan.Y;
+
+        var minVisibleX = Math.Min(contentWidth, viewport.Width * MinVisibleViewportFraction);
+        var minVisibleY = Math.Min(contentHeight, viewport.Height * MinVisibleViewportFraction);
+        var minX = minVisibleX - contentWidth;
+        var maxX = viewport.Width - minVisibleX;
+        var minY = minVisibleY - contentHeight;
+        var maxY = viewport.Height - minVisibleY;
+
+        left = Math.Clamp(left, minX, maxX);
+        top = Math.Clamp(top, minY, maxY);
+
+        return new Vector(left - baseOffset.X, top - baseOffset.Y);
+    }
+
+    /// <summary>当前板面左上角在控件内的位置（测试/诊断用）。</summary>
+    internal Point ContentOffsetForTest
+        => GetContentOffsetFor(Bounds.Size, Zoom, Snapshot) + PanOffset;
+
     private SeatVisual? FindSeat(string id)
     {
         var seats = Snapshot?.Seats;
@@ -730,7 +811,10 @@ public sealed class SeatingCanvas : Control
         if (isSecondTouch)
         {
             if (TryStartPinch(e))
+            {
+                e.Handled = true;
                 return;
+            }
 
             // 同一双指组合已经识别过，第二根手指的后续按下/移动不再参与单指状态机
             if (_pinchActive)
@@ -797,6 +881,11 @@ public sealed class SeatingCanvas : Control
             UpdatePinch(e.Pointer, e.GetPosition(this));
             return;
         }
+
+        // 非当前手势指针（例如第一根手指按着、第二根被忽略时）的移动不能写 _pointerPosition，
+        // 否则平移/拖拽会突然拿另一根手指的位置算增量，表现为画面跳一下或漂移。
+        if (_activePointer is not null && !ReferenceEquals(e.Pointer, _activePointer))
+            return;
 
         _pointerPosition = e.GetPosition(this);
 
@@ -1020,9 +1109,8 @@ public sealed class SeatingCanvas : Control
         // 否则捏合会被「重启」，两指间距按错的两根手指算，画面同样会跳。
         if (_pinchGestureSeen) return false;
 
-        // 单指阶段已经拖起座位（超过阈值）时保持拖拽语义，避免拖动中被打断
-        if (_isDragging) return false;
-
+        // 第一根手指可能已经超过拖拽阈值（触摸抖动 4px 就会发生）：
+        // 这里必须让捏合接管并取消拖拽，否则双指缩放会被误判为「拖动中」而直接失效。
         _pinchFirstPointer = _activePointer;
         _pinchFirstPosition = _pointerPosition;
         _pinchGestureSeen = true;
